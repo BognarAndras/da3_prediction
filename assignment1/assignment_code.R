@@ -181,55 +181,68 @@ ggplot(data = earnings_it, aes(x=uhours,y=wages_per_hour)) +
 
 
 # Interactions
+setwd("C:/Users/abogn/CEU/Study/da3/git/da3_prediction/assignment1/")
 
-
-
+source("ch14_aux_fncs.R")
+p1 <- price_diff_by_variables2(earnings_it, "no_child", "female" ,  "no_child" ,"female")
+p2 <- price_diff_by_variables2(earnings_it, "poc", "foreign_born" ,  "poc" ,"foreign_born")
+p3 <- price_diff_by_variables2(earnings_it, "age", "poc" ,  "age" ,"poc")
+p4 <- price_diff_by_variables2(earnings_it, "age", "foreign_born" ,  "age" ,"foreign_born")
+p5 <- price_diff_by_variables2(earnings_it, "age", "female" ,  "age" ,"female")
+p6 <- price_diff_by_variables2(earnings_it, "poc", "female" ,  "poc" ,"female")
 
 # Model 1: Linear regression on grade
-model1 <- as.formula(price ~ age + agesq)
+model1 <- as.formula(wages_per_hour ~ grade92 )
 # Models 2: Multiple linear regression grade + age
-model2 <- as.formula(price ~ age + agesq + odometer)
+model2 <- as.formula(wages_per_hour ~ grade92 + age + agesq )
 # Models 3: Multiple linear regression grade + age + female  + uhours + foreign_born +
 # no_child + race
-model3 <- as.formula(price ~ age + agesq + odometer + odometersq + LE + cond_excellent + cond_good + dealer)
+model3 <- as.formula(wages_per_hour ~ grade92 + age + agesq + occ2012 + female + uhours + foreign_born + no_child + race)
 # Model 4 interaction:
-model4 <- as.formula(price ~ age + agesq + agecu + odometer + odometersq + LE*age + XLE*age + SE*age +
-                       cond_likenew*age + cond_excellent*age + cond_good*age + cylind6*age + odometer*age + dealer*age)
-
+model4 <- as.formula(wages_per_hour ~ grade92 + age + agesq + uhours + occ2012 +
+                       female*age + foreign_born*age + no_child*female + race*age)
+# model31 <- as.formula(wages_per_hour ~ grade92 + age + agesq + female + uhours + foreign_born + no_child + poc)
+# model41 <- as.formula(wages_per_hour ~ grade92 + age + agesq + uhours +
+#                        female*age + foreign_born*age + no_child*female + poc*age)
+# model42 <- as.formula(wages_per_hour ~ grade92 + age + agesq + uhours +
+#                         female*agesq + foreign_born*agesq + no_child*female + poc*agesq)
 
 # Running simple OLS
-reg1 <- feols(model1, data=data, vcov = 'hetero')
-reg2 <- feols(model2, data=data, vcov = 'hetero')
-reg3 <- feols(model3, data=data, vcov = 'hetero')
-reg4 <- feols(model4, data=data, vcov = 'hetero')
-
+reg1 <- feols(model1, data=earnings_it, vcov = 'hetero')
+reg2 <- feols(model2, data=earnings_it, vcov = 'hetero')
+reg3 <- feols(model3, data=earnings_it, vcov = 'hetero')
+reg4 <- feols(model4, data=earnings_it, vcov = 'hetero')
 
 # evaluation of the models: using all the sample
 fitstat_register("k", function(x){length( x$coefficients ) - 1}, "No. Variables")
-fitstat_register("rmsestd", function(x){sd( rmse ) }, "rmsestd")
-etable( reg1 , reg2 , reg3 , reg4 , reg5 , fitstat = c('aic','bic','rmse','ar2','r2','n','k') )
+etable( reg1 , reg2 , reg3 , reg4  , fitstat = c('aic','bic','rmse','ar2','r2','n','k') )
 
 
+# convex age, female less, hours less
+data.table(earnings_it)[ no_child < 3 , .( avg = mean(wages_per_hour )) , by = female]
+data.table(earnings_it)[ no_child == 3 & female == 0 , .( .N ) ]
+table(earnings_it$grade92)
 # 5B) Cross-validation for better evaluation of predictive performance
 
-k <- 4
+k <- 5
 
 # We use the 'train' function which allows many type of model training -> use cross-validation
-set.seed(13505)
-cv1 <- train(model1, data, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(220126)
+cv1 <- train(model1, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k))
 
 # Check the output:
 cv1
 summary(cv1)
-cv1$results
+cv3$results[5]
+cv3$resample[[2]][5]
 cv1$resample[[1]][1]^2
 
-set.seed(13505)
-cv2 <- train(model2, data, method = "lm", trControl = trainControl(method = "cv", number = k))
-set.seed(13505)
-cv3 <- train(model3, data, method = "lm", trControl = trainControl(method = "cv", number = k), na.action = "na.omit")
-set.seed(13505)
-cv4 <- train(model4, data, method = "lm", trControl = trainControl(method = "cv", number = k), na.action = "na.omit")
+set.seed(220126)
+cv2 <- train(model2, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(220126)
+cv3 <- train(model3, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k), na.action = "na.omit")
+set.seed(220126)
+cv4 <- train(model4, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k), na.action = "na.omit")
 
 
 # Calculate RMSE for each fold and the average RMSE as well
@@ -252,8 +265,11 @@ cv_mat <- data.frame(rbind(cv1$resample[4], "Average"),
                      rbind(cv4$resample[1], rmse_cv[4])
 )
 
-colnames(cv_mat)<-c("Resample","Model1", "Model2", "Model3", "Model4")
-cv_mat 
+test_rmsd <- data.table(cv_mat)[Resample != "Average"]
+RMSEsd <- c("RMSESD" , test_rmsd[,2:5][,lapply(.SD, sd)])
+names(RMSEsd) <- names(cv_mat) 
+cv_mat <- rbind(cv_mat , RMSEsd) 
+
 
 
 # Show model complexity and out-of-sample RMSE performance
@@ -262,14 +278,27 @@ models <- c("reg1", "reg2", "reg3", "reg4")
 for( i in 1 : length(cv) ){
   m_comp[ i ] <- length( get( models[i] )$coefficient  - 1 ) 
 }
-
+length( get( models[2] )$coefficient ) - 1
 m_comp <- tibble( model = models , 
                   complexity = m_comp,
-                  RMSE = rmse_cv )
+                  RMSE = rmse_cv ,  
+                  RMSEsd = unlist(cv_mat[7,2:5]) )
+
+one_sd_rule <- unlist(data.table(m_comp)[RMSE == min(RMSE) ,.(RMSEsd)])
 
 ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
   geom_point(color='red',size=2) +
-  geom_line(color='blue',size=0.5)+
+  geom_line(color='blue',size=0.5) +
+  geom_segment(data = m_comp, aes(x=min(complexity), xend=max(complexity),
+                                  y=( min(RMSE) + one_sd_rule ),
+                                  yend=( min(RMSE)) + one_sd_rule ),
+                                  color = "red" ) +
+  geom_label(aes(x = 6.5, y = min(RMSE) + one_sd_rule + 0.05 ), 
+             label = "One Standard Deviation from M4" ,
+             size = 4, color = 'red', fill = "lightblue" , fontface = "bold") +
   labs(x='Number of explanatory variables',y='Averaged RMSE on test samples',
-       title='Prediction performance and model compexity') +
+           title='Prediction performance and model compexity') +
+  scale_x_continuous( breaks = seq(2 , 14 ,2))
   theme_bw()
+
+

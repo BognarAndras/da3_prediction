@@ -1,0 +1,250 @@
+---
+title: Assignment 1 - Predicting Software Developer Wages
+author: "A. BOGNAR"
+output: 
+  pdf_document:
+    extra_dependencies: ["float"]
+urlcolor: red
+geometry: margin=0.5in
+---
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Loading packages
+
+library(tidyverse)
+library(modelsummary)
+library(kableExtra)
+library(ggpubr)
+library(fixest)
+library(xtable)
+library(caret)
+library(data.table)
+```
+
+## Introduction
+
+
+## Data
+
+
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Get the data, filter software developers
+
+cps_earnings <- read_csv("https://osf.io/4ay9x/download")
+
+cps_earnings_filtered <- cps_earnings %>%
+  mutate( sample = ifelse( occ2012 >= 1010 & occ2012 <= 1030  , 1 , 0 ) ) 
+
+earnings_it <- cps_earnings_filtered %>% filter( sample == 1 )
+
+```
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Data cleaning
+
+# Creating additional columns
+
+earnings_it <- earnings_it %>% 
+  mutate( female =  as.numeric( sex == 2 )) %>%
+  mutate( wages_per_hour = earnwke / uhours) %>%
+  mutate( log_wages_per_hour = log( wages_per_hour )) 
+
+# Dropping values not used for prediction
+
+earnings_it <- earnings_it %>% 
+  filter( grade92 >= 39 & grade92 <= 44 | grade92 == 46 ) %>%
+  filter( age >= 22  ) %>% 
+  filter( lfsr94 == "Employed-At Work" ) %>%
+  filter( uhours >= 20 ) %>% 
+  filter( wages_per_hour >= 5 )
+
+# Creating columns used for prediction
+
+earnings_it <- earnings_it %>%
+  mutate(foreign_born = ifelse(startsWith(earnings_it$prcitshp , "Foreign Born,"), 1,0),
+         US_citizen = ifelse(startsWith(earnings_it$prcitshp , "Foreign Born, Not a"), 0,1),
+         Gov_empl = ifelse(startsWith(earnings_it$class , "Government "), 1,0),
+         Prof_empl = ifelse(class == "Private, For Profit", 1,0),
+         NGO_empl = ifelse(class == "Private, Nonprofit", 1,0),
+         unionmember = ifelse(unionmme == "Yes", 1,0),
+         married = ifelse(marital < 4, 1,0),
+         no_child = ifelse(ownchild > 3 , 3,ownchild),
+         poc = ifelse(race == 1 , 0,1),
+         agesq = age^2,
+         uhourssq = uhours^2)
+```
+
+
+
+
+### Gender gaps in education
+
+
+## Models
+
+
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE, fig.width=8, fig.height = 3, fig.align="center"}
+# Models
+
+# Model 1: Linear regression on grade
+model1 <- as.formula(wages_per_hour ~ grade92 )
+# Models 2: Multiple linear regression grade + age
+model2 <- as.formula(wages_per_hour ~ grade92 + age + agesq )
+# Models 3: Multiple linear regression grade + age + female  + uhours + foreign_born +
+# no_child + race
+model3 <- as.formula(wages_per_hour ~ grade92 + age + agesq + occ2012 + female + uhours + foreign_born + no_child + race)
+# Model 4 interaction:
+model4 <- as.formula(wages_per_hour ~ grade92 + age + agesq + uhours + occ2012 +
+                       female*age + foreign_born*age + no_child*female + race*age)
+
+```
+
+Finally, you can see the results of my models in *Table 2*.
+
+**Models 1 and 2** show that for countries with 1% higher out-of-school rate we expect 1.3 more deaths before age of 5 from 1000 births on avg. This is true for both genders with the caveat that for girls this is only true above 3% primary school absence. Below that variation among countries is too high to draw a conclusion. 
+
+In **Model 3** we want to see the pattern between the education of a gender and child mortality with the difference in the education of the other gender accounted for. We find that lack of girls education is associated with higher child mortality while lack of boys education is associated with lower child mortality. Does this mean that lower education for boys would be associated with less child mortality? No. As I argued, level of education of genders tend to go together, it is simply the case that countries most affected by child mortality also have lower levels of education for girls. In other words this shows that with current rates of education, girls out-of-school rate explains changes in child mortality more than boys'.
+
+Adding to the complexity **Model 4** accounts for the other measurements I described previously. Higher GDP per capita is strongly associated with child mortality (1% higher GDPP on avg. with about 0.08 lower child mortality rate) along with institutional delivery (above 2/3 hospital deliveries, 1% higher hospital delivery associated with 0.85 lower mortality rate). Girls education is still associated with lower mortality even controlled for these 2 additional measures.
+
+Next, I wanted to see how widely these findings can be applied. In **Model 5** I used the same measurements, but instead of comparing countries, I weighted each state by their population. I compared people who happen to live in different countries. The findings are relatively similar. The biggest difference is that Institutional Delivery no longer shows a statistically significant association. That means that countries with big population and most births in hospitals tend to have high mortality rates. India has an above avg. mortality and 80% institutional delivery. Since I didn't have data for China, this makes most of the difference.
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Running  OLS
+reg1 <- feols(model1, data=earnings_it, vcov = 'hetero')
+reg2 <- feols(model2, data=earnings_it, vcov = 'hetero')
+reg3 <- feols(model3, data=earnings_it, vcov = 'hetero')
+reg4 <- feols(model4, data=earnings_it, vcov = 'hetero')
+
+# table of models
+fitstat_register("k", function(x){length( x$coefficients ) - 1}, "No. Variables")
+
+
+varname_report <- c("(Intercept)" = "Intercept",
+                   "grade92" 
+                   = "Level of Education",
+                   "age" 
+                   = "Age",
+                   "agesq" = "Age squared",
+                   "female" = "Gender",
+                   "uhours" = "Hours worked",
+                   "foreign_born" = "Foreigner (binary)",
+                   "no_child" = "Number of children",
+                   "race" = "Race",
+                   "age x female" = "Age-gender interaction",
+                   "age x foreign_born" = "Age-foreigner interaction",
+                   "female x no_child" = "Gender-number of children interaction",
+                   "age x race" = "Age-race interaction")
+
+style_noHeaders = style.tex(var.title = "", fixef.title = "", stats.title = " ")
+
+
+kable( etable( reg1 , reg2 , reg3 , reg4 ,
+        dict = varname_report,
+        se.below = T,
+        coefstat = 'se',
+        fitstat = c('aic','bic','rmse','ar2','r2','n','k'),
+        se.row = F,
+        depvar = F,
+        digits = 3,
+        digits.stats = 4) , 
+        col.names = c('(1)','(2)','(3)','(4)'),
+        "latex", booktabs = TRUE, 
+        caption = 
+         'Models to predict software developer wages') %>%
+        kable_styling(latex_options = "hold_position", font_size = 7 )
+
+```
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Cross validation
+
+# 5 cuts
+
+k <- 5
+
+# Train samples
+set.seed(220126)
+cv1 <- train(model1, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(220126)
+cv2 <- train(model2, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(220126)
+cv3 <- train(model3, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k), na.action = "na.omit")
+set.seed(220126)
+cv4 <- train(model4, earnings_it, method = "lm", trControl = trainControl(method = "cv", number = k), na.action = "na.omit")
+
+# Calculate test RMSE for each fold and the average RMSE for all
+cv <- c("cv1", "cv2", "cv3", "cv4")
+rmse_cv <- c()
+
+for(i in 1:length(cv)){
+  rmse_cv[i] <- sqrt((get(cv[i])$resample[[1]][1]^2 +
+                        get(cv[i])$resample[[1]][2]^2 +
+                        get(cv[i])$resample[[1]][3]^2 +
+                        get(cv[i])$resample[[1]][4]^2)/4)
+}
+
+
+# summarize results
+cv_mat <- data.frame(rbind(cv1$resample[4], "Average"),
+                     rbind(cv1$resample[1], rmse_cv[1]),
+                     rbind(cv2$resample[1], rmse_cv[2]),
+                     rbind(cv3$resample[1], rmse_cv[3]),
+                     rbind(cv4$resample[1], rmse_cv[4])
+)
+cv_mat
+```
+
+
+## Generalization
+
+
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Calculate Standard Deviation of test RMSDs
+
+test_rmsd <- data.table(cv_mat)[Resample != "Average"]
+RMSEsd <- c("RMSESD" , test_rmsd[,2:5][,lapply(.SD, sd)])
+names(RMSEsd) <- names(cv_mat) 
+cv_mat <- rbind(cv_mat , RMSEsd) 
+
+
+
+# Show model complexity and out-of-sample RMSE performance
+m_comp <- c()
+models <- c("reg1", "reg2", "reg3", "reg4")
+for( i in 1 : length(cv) ){
+  m_comp[ i ] <- length( get( models[i] )$coefficient  )  - 1
+}
+
+m_comp <- tibble( model = models , 
+                  complexity = m_comp,
+                  RMSE = rmse_cv ,  
+                  RMSEsd = unlist(cv_mat[7,2:5]) )
+
+one_sd_rule <- unlist(data.table(m_comp)[RMSE == min(RMSE) ,.(RMSEsd)])
+
+ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
+  geom_point(color='red',size=2) +
+  geom_line(color='blue',size=0.5) +
+  geom_segment(data = m_comp, aes(x=min(complexity), xend=max(complexity),
+                                  y=( min(RMSE) + one_sd_rule ),
+                                  yend=( min(RMSE)) + one_sd_rule ),
+                                  color = "red" ) +
+  geom_label(aes(x = 6.5, y = min(RMSE) + one_sd_rule + 0.05 ), 
+             label = "One Standard Deviation from M4" ,
+             size = 4, color = 'red', fill = "lightblue" , fontface = "bold") +
+  labs(x='Number of explanatory variables',y='Averaged RMSE on test samples',
+           title='Prediction performance and model compexity') +
+  scale_x_continuous( breaks = seq(1 , 13 ,2)) +
+  theme_bw()
+```
+
+## Conclusion, Further Analysis
+
+In conclusion the findings are in line with the expectations. Lower out-of-school rate for girls (likely both genders) is associated with lower child mortality even after controlling for factors that are also associated with reduced mortality such as economic growth and child births in professional environments. GDPP itself could absorb some of the association of girls' education due to the mechanism I mentioned at the beginning about women in workforce. Finding controls that exclude this effect could help further analysis. More importantly, this analysis focused only on association, not on causality. We can't conclude that increasing girls' education will decrease child mortality since we couldn't have accounted for all relevant measurements behind the pattern such as effect of social welfare or access to proper nutrition on child mortality. Still, the findings affirm that international programs aiming to decreased child mortality by getting girls into schools follow a real pattern.
+
+\newpage
+
+## Appendix
