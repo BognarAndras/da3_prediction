@@ -208,7 +208,7 @@ Which model to choose from the 4? Perhaps the one most closely approximating the
 
 However, the level of error is sensitive to how we test it, to get a better understanding we can run multiple simulations. The below table shows the results of these. While Model 4 is still the most accurate, the difference is very small and can vary a lot trial to trial. Therefore, it may be better to choose a model built on associations that are likely to not change.
 
-```{r, echo=FALSE , warning=FALSE , message=FALSE , out.width="65%"}
+```{r, echo=FALSE , warning=FALSE , message=FALSE , out.width="65%" }
 # Calculate Standard Deviation of test RMSDs
 
 test_rmsd <- data.table(cv_mat)[Resample != "Average"]
@@ -219,8 +219,9 @@ cv_mat <- rbind(cv_mat , RMSEsd)
 cv_mat  %>% rename( "Model 1" = RMSE , "Model 2" = RMSE.1 , 
                      "Model 3" = RMSE.2 , "Model 4" = RMSE.3 ) %>% 
   mutate_if(is.numeric, format, digits=2) %>% 
-  kable(booktabs = T) %>% 
-  kable_minimal( full_width = T , latex_options = c("HOLD_position") ) 
+  kable(booktabs = T , 
+        caption = "Cross-validated RMSE (Prediction error)") %>% 
+  kable_styling( full_width = T , latex_options = c("HOLD_position") ) 
 
 
 ```
