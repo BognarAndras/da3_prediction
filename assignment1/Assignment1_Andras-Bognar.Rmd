@@ -1,15 +1,17 @@
 ---
-title: Assignment 1 - Predicting Software Developer Wages
+title: Assignment 1 - Predicting Developer Wages
 author: "A. BOGNAR"
 output: 
   pdf_document:
     extra_dependencies: ["float"]
 urlcolor: red
 geometry: margin=0.5in
+
 ---
 
 ```{r, echo=FALSE , warning=FALSE , message=FALSE}
 # Loading packages
+
 
 library(tidyverse)
 library(modelsummary)
@@ -19,14 +21,15 @@ library(fixest)
 library(xtable)
 library(caret)
 library(data.table)
+library(cowplot)
+library(knitr)
 ```
 
 ## Introduction
 
+The [CPS survey]("http://www2.nber.org/data/morg.html") collects employment and demographic information in the US. In my report I try to use it to predict wages of developers. Specifically, I grouped *Computer programmers*, *Software developers* and *Web developers*. These fields are similar in earnings and other characteristics. Thus, predictions hopefully can provide some insight for someone planning to join this field about wage expectations.
 
 ## Data
-
-
 
 ```{r, echo=FALSE , warning=FALSE , message=FALSE}
 # Get the data, filter software developers
@@ -62,8 +65,10 @@ earnings_it <- earnings_it %>%
 # Creating columns used for prediction
 
 earnings_it <- earnings_it %>%
-  mutate(foreign_born = ifelse(startsWith(earnings_it$prcitshp , "Foreign Born,"), 1,0),
-         US_citizen = ifelse(startsWith(earnings_it$prcitshp , "Foreign Born, Not a"), 0,1),
+  mutate(foreign_born = ifelse(startsWith(earnings_it$prcitshp , "Foreign Born,"),
+                               1,0),
+         US_citizen = ifelse(startsWith(earnings_it$prcitshp , "Foreign Born, Not a"),
+                             0,1),
          Gov_empl = ifelse(startsWith(earnings_it$class , "Government "), 1,0),
          Prof_empl = ifelse(class == "Private, For Profit", 1,0),
          NGO_empl = ifelse(class == "Private, Nonprofit", 1,0),
@@ -75,15 +80,14 @@ earnings_it <- earnings_it %>%
          uhourssq = uhours^2)
 ```
 
+For useful predictions, I discarded data points that can not be predicted with high certainty, such as:
 
-
-
-### Gender gaps in education
-
+* Self-employed workers who have very unique wage calculation.
+* Under 20 hour long work weeks usually come with unique situations (i.e. consulting).
+* Wages under age 22 are not very stable.
+* Education levels are diverse. I included levels above High School except Master's degrees due to lack of data.
 
 ## Models
-
-
 
 ```{r, echo=FALSE , warning=FALSE , message=FALSE, fig.width=8, fig.height = 3, fig.align="center"}
 # Models
@@ -101,15 +105,16 @@ model4 <- as.formula(wages_per_hour ~ grade92 + age + agesq + uhours + occ2012 +
 
 ```
 
-Finally, you can see the results of my models in *Table 2*.
+Based on patterns of association between wages and other variables I constructed the following predictive models:
 
-**Models 1 and 2** show that for countries with 1% higher out-of-school rate we expect 1.3 more deaths before age of 5 from 1000 births on avg. This is true for both genders with the caveat that for girls this is only true above 3% primary school absence. Below that variation among countries is too high to draw a conclusion. 
+**Models 1** predicts wages entirely based on education, this variable has the highest association with level of wages. 
 
-In **Model 3** we want to see the pattern between the education of a gender and child mortality with the difference in the education of the other gender accounted for. We find that lack of girls education is associated with higher child mortality while lack of boys education is associated with lower child mortality. Does this mean that lower education for boys would be associated with less child mortality? No. As I argued, level of education of genders tend to go together, it is simply the case that countries most affected by child mortality also have lower levels of education for girls. In other words this shows that with current rates of education, girls out-of-school rate explains changes in child mortality more than boys'.
+**Model 2** adds age of employees. Older developers earn more into their 50s, after which they tend to earn less.
 
-Adding to the complexity **Model 4** accounts for the other measurements I described previously. Higher GDP per capita is strongly associated with child mortality (1% higher GDPP on avg. with about 0.08 lower child mortality rate) along with institutional delivery (above 2/3 hospital deliveries, 1% higher hospital delivery associated with 0.85 lower mortality rate). Girls education is still associated with lower mortality even controlled for these 2 additional measures.
+**Model 3** accounts for the actual title of the job (Software developers earn the highest), gender , race and number of children of workers as well as the hours worked weekely and if they were born in the US or not. 
 
-Next, I wanted to see how widely these findings can be applied. In **Model 5** I used the same measurements, but instead of comparing countries, I weighted each state by their population. I compared people who happen to live in different countries. The findings are relatively similar. The biggest difference is that Institutional Delivery no longer shows a statistically significant association. That means that countries with big population and most births in hospitals tend to have high mortality rates. India has an above avg. mortality and 80% institutional delivery. Since I didn't have data for China, this makes most of the difference.
+**Model 4** adds additionaly details to the previous model by accounting for variables that have different patterns together. For example, women on average earn less than man, but women with 3 or more children earn more than fathers of 3+ kids. Granted only 14 such women are included, therefore, more data is needed before generalizing this result.
+
 ```{r, echo=FALSE , warning=FALSE , message=FALSE}
 # Running  OLS
 reg1 <- feols(model1, data=earnings_it, vcov = 'hetero')
@@ -127,6 +132,7 @@ varname_report <- c("(Intercept)" = "Intercept",
                    "age" 
                    = "Age",
                    "agesq" = "Age squared",
+                   "occ2012" = "Job Title" ,
                    "female" = "Gender",
                    "uhours" = "Hours worked",
                    "foreign_born" = "Foreigner (binary)",
@@ -144,7 +150,7 @@ kable( etable( reg1 , reg2 , reg3 , reg4 ,
         dict = varname_report,
         se.below = T,
         coefstat = 'se',
-        fitstat = c('aic','bic','rmse','ar2','r2','n','k'),
+        fitstat = c('bic','rmse','n','k'),
         se.row = F,
         depvar = F,
         digits = 3,
@@ -153,7 +159,7 @@ kable( etable( reg1 , reg2 , reg3 , reg4 ,
         "latex", booktabs = TRUE, 
         caption = 
          'Models to predict software developer wages') %>%
-        kable_styling(latex_options = "hold_position", font_size = 7 )
+        kable_styling(latex_options = "hold_position", font_size = 9 )
 
 ```
 
@@ -193,15 +199,16 @@ cv_mat <- data.frame(rbind(cv1$resample[4], "Average"),
                      rbind(cv3$resample[1], rmse_cv[3]),
                      rbind(cv4$resample[1], rmse_cv[4])
 )
-cv_mat
+
 ```
 
+\newpage
 
-## Generalization
+Which model to choose from the 4? Perhaps the one most closely approximating the patterns in the data, according to BIC measure this is Model 3. Or the one with the lowest average error in it's predictions which is Model 4 according to RMSE.
 
+However, the level of error is sensitive to how we test it, to get a better understanding we can run multiple simulations. The below table shows the results of these. While Model 4 is still the most accurate, the difference is very small and can vary a lot trial to trial. Therefore, it may be better to choose a model built on associations that are likely to not change.
 
-
-```{r, echo=FALSE , warning=FALSE , message=FALSE}
+```{r, echo=FALSE , warning=FALSE , message=FALSE , out.width="65%"}
 # Calculate Standard Deviation of test RMSDs
 
 test_rmsd <- data.table(cv_mat)[Resample != "Average"]
@@ -209,8 +216,20 @@ RMSEsd <- c("RMSESD" , test_rmsd[,2:5][,lapply(.SD, sd)])
 names(RMSEsd) <- names(cv_mat) 
 cv_mat <- rbind(cv_mat , RMSEsd) 
 
+cv_mat  %>% rename( "Model 1" = RMSE , "Model 2" = RMSE.1 , 
+                     "Model 3" = RMSE.2 , "Model 4" = RMSE.3 ) %>% 
+  mutate_if(is.numeric, format, digits=2) %>% 
+  kable(booktabs = T) %>% 
+  kable_minimal( full_width = T , latex_options = c("HOLD_position") ) 
 
 
+```
+
+\newpage
+
+The below graph shows that Models 2-4 are really close in performance but Model 2 is lot less complex.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE , out.width="65%"}
 # Show model complexity and out-of-sample RMSE performance
 m_comp <- c()
 models <- c("reg1", "reg2", "reg3", "reg4")
@@ -234,17 +253,103 @@ ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
                                   color = "red" ) +
   geom_label(aes(x = 6.5, y = min(RMSE) + one_sd_rule + 0.05 ), 
              label = "One Standard Deviation from M4" ,
-             size = 4, color = 'red', fill = "lightblue" , fontface = "bold") +
+             size = 4, color = 'red', fill = "black" , fontface = "bold") +
   labs(x='Number of explanatory variables',y='Averaged RMSE on test samples',
            title='Prediction performance and model compexity') +
   scale_x_continuous( breaks = seq(1 , 13 ,2)) +
   theme_bw()
 ```
 
-## Conclusion, Further Analysis
 
-In conclusion the findings are in line with the expectations. Lower out-of-school rate for girls (likely both genders) is associated with lower child mortality even after controlling for factors that are also associated with reduced mortality such as economic growth and child births in professional environments. GDPP itself could absorb some of the association of girls' education due to the mechanism I mentioned at the beginning about women in workforce. Finding controls that exclude this effect could help further analysis. More importantly, this analysis focused only on association, not on causality. We can't conclude that increasing girls' education will decrease child mortality since we couldn't have accounted for all relevant measurements behind the pattern such as effect of social welfare or access to proper nutrition on child mortality. Still, the findings affirm that international programs aiming to decreased child mortality by getting girls into schools follow a real pattern.
+## Conclusion
+
+My preferred Model is *Model 3* since it adds considerable accuracy while most associations seem to be generally strong. Some of these associations may become weaker in the future or in specific occupations. Predictions for very specific cases with low sample sizes such as mothers with 3+ kids are not as reliable. In general avg. 14 dollars/h prediction error with 38dollars/h avg. wages is really high, individual wages are difficult to predict with high levels of accuracy.
 
 \newpage
 
 ## Appendix
+
+Wages in the sample seem to be closer to normal than lognormal distribution, therefore, I decided not to transform the variable. In addition, there were only a few extremely high wages but this is to be expected in this competitive field, I did not see a reason to exclude them.
+
+```{r, echo = F , warning = F , message = F}
+histograms <- function(x_var , x_lab) {
+  ggplot( earnings_it , aes(x = wages_per_hour)) +
+    geom_histogram( fill='navyblue', color = 'white' ) +
+    labs(y = "Number of employees" , x = "wages per hour") +
+    theme_bw()
+}
+
+histograms(wages_per_hour , "Wages per Hour")
+
+
+```
+
+\newpage
+
+Correlations guided many of my variable choices, I created new variables such US citizenship that turned out to be less predictive than already existing ones.
+
+```{r, echo = F , warning = F , message = F}
+earnings_it_nums <- keep( earnings_it , is.numeric )
+cT <- round( cor( earnings_it_nums , use = "complete.obs") , 2 )
+cT[ upper.tri( cT ) ] <- NA
+melted_cormat <- melt( cT , na.rm = TRUE)
+
+
+ggplot( data = melted_cormat, aes( Var2 , Var1 , fill = value ) )+
+  geom_tile( color = "white" ) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Correlation") +
+  theme_bw()+ 
+  theme( axis.text.x = element_text(angle = 45, vjust = 1, 
+                                    size = 8, hjust = 1))+
+  labs(y="",x="")+
+  coord_fixed()
+
+```
+
+\newpage
+
+I grouped number of children above 3 for better interpretation, for women even then there were few cases which makes for big variation in this category. However, women with many children tend to earn more than man with many children, further data would be required to validate this pattern.
+
+Other interesting patterns below: foreign born developers and people of color earn more than locals and white people for most of their lives but not in really young and really old ages. Women start out earning more than men and fall behind in their late twenties and thirties.  
+
+```{r , echo = F, warning = F , message = F }
+source("Interaction_graph.R")
+
+p1 <- wage_diff_by_variables(earnings_it, "no_child", 
+                               "female" ,
+                               "Number of Children" ,"Gender (Blue female)")
+p2 <- wage_diff_by_variables(earnings_it, "poc", "foreign_born" ,
+                               "Person of color (1 Yes)" ,"Foreigner (Blue yes)")
+p3 <- wage_diff_by_variables(earnings_it, "age", "poc" ,  
+                               "Age" ,"Person of color (Blue Yes)")
+p4 <- wage_diff_by_variables(earnings_it, "age", "foreign_born" , 
+                               "Age" ,"Foreigner (Blue yes)")
+p5 <- wage_diff_by_variables(earnings_it, "age", "female" ,  
+                               "Age" ,"Gender (Blue female")
+p6 <- wage_diff_by_variables(earnings_it, "poc", "female" , 
+                               "Person of color (1 Yes)" ,"Gender (Blue female")
+
+g_interactions <- plot_grid(p1, p2, p3, p4, p5, p6, nrow=3, ncol=2)
+g_interactions
+
+```
+
+\newpage
+
+Wages mostly stagnate by age 40, slightly decreasing on average.
+
+```{r, echo = F, warning = F , message = F}
+chck_sp <- function( x_var , x_lab ){
+  ggplot( earnings_it , aes(x = x_var, y = wages_per_hour)) +
+    geom_point(color='red',size=2,alpha=0.6) +
+    geom_smooth(method="loess" , formula = y ~ x )+
+    labs(x = x_lab, y = "Wages per hour") +
+    theme_bw() +
+    theme(axis.title.y = element_text(size = 10) )
+}
+
+chck_sp(earnings_it$age,"Age")
+```
+

@@ -183,13 +183,13 @@ ggplot(data = earnings_it, aes(x=uhours,y=wages_per_hour)) +
 # Interactions
 setwd("C:/Users/abogn/CEU/Study/da3/git/da3_prediction/assignment1/")
 
-source("ch14_aux_fncs.R")
-p1 <- price_diff_by_variables2(earnings_it, "no_child", "female" ,  "no_child" ,"female")
-p2 <- price_diff_by_variables2(earnings_it, "poc", "foreign_born" ,  "poc" ,"foreign_born")
-p3 <- price_diff_by_variables2(earnings_it, "age", "poc" ,  "age" ,"poc")
-p4 <- price_diff_by_variables2(earnings_it, "age", "foreign_born" ,  "age" ,"foreign_born")
-p5 <- price_diff_by_variables2(earnings_it, "age", "female" ,  "age" ,"female")
-p6 <- price_diff_by_variables2(earnings_it, "poc", "female" ,  "poc" ,"female")
+source("Interaction_graph.R")
+p1 <- wage_diff_by_variables(earnings_it, "no_child", "female" ,  "no_child" ,"female")
+p2 <- wage_diff_by_variables(earnings_it, "poc", "foreign_born" ,  "poc" ,"foreign_born")
+p3 <- wage_diff_by_variables(earnings_it, "age", "poc" ,  "age" ,"poc")
+p4 <- wage_diff_by_variables(earnings_it, "age", "foreign_born" ,  "age" ,"foreign_born")
+p5 <- wage_diff_by_variables(earnings_it, "age", "female" ,  "age" ,"female")
+p6 <- wage_diff_by_variables(earnings_it, "poc", "female" ,  "poc" ,"female")
 
 # Model 1: Linear regression on grade
 model1 <- as.formula(wages_per_hour ~ grade92 )
@@ -301,4 +301,12 @@ ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
   scale_x_continuous( breaks = seq(2 , 14 ,2))
   theme_bw()
 
+  kbl( ) %>%
+    kable_minimal(latex_options = c("HOLD_position","scale_down")) %>% 
+    save_kable("test.html", self_contained = F)
+  
 
+  webshot::webshot("test.html")
+  install.packages("webshot")
+  library(webshot) 
+  webshot::install_phantomjs()
