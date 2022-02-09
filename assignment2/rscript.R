@@ -12,12 +12,274 @@ library(knitr)
 
 # Load data
 
-cps_earnings <- read_csv("https://osf.io/4ay9x/download")
+data <- read_csv("https://raw.githubusercontent.com/BognarAndras/da3_prediction/main/assignment2/raw/listings.csv")
 
-# Check how many missing
+# Cleaning up variables
 
-to_filter <- sapply(data, function(x) sum(is.na(x)))
-to_filter[to_filter > 0]
+unique(data$property_type) 
+
+datasummary(property_type ~ N + Percent(), data = data )
+
+head(as.integer(gsub("[$]" , "" , gsub("," , "", data$price))))
+head(data$price)
+
+datau <- data.table(data)
+datau$price_fixed <- as.integer(gsub("[$]" , "" , gsub("," , "", datau$price)))
+
+unique(datau$beds)
+datau[ , .('mean_price' = mean(price_fixed , na.rm=TRUE) , .N) , by =property_type ]
+datau[ , .('mean_bedrooms' = mean(bedrooms , na.rm=TRUE) , .N) , by =property_type ]
+# Entire condominium (condo) 1447 NO
+# Entire loft	596 NO
+# Entire rental unit	13474 YES
+# Entire residential home	1054 NO
+# Entire serviced apartment	655 YES
+
+# Private room in bed and breakfast	103 NO
+# Private room in condominium (condo)	430 NO 
+# Private room in rental unit	3258 YES
+# Private room in residential home	1029 NO
+# Private room in serviced apartment 61 YES
+
+# Room in hotel	Room in boutique hotel	112+43 NO
+# Shared room in rental unit	201 NO
+# Shared room in residential home	160 NO
+
+data <- data %>%
+  filter(property_type %in% c("Entire rental unit" , "Entire serviced apartment" ,
+                             "Private room in rental unit" ,
+                             "Private room in serviced apartment"))
+
+data <- data %>%
+  mutate(f_property_type = factor(property_type))
+
+data$f_property_type <- factor(ifelse(data$f_property_type== "Entire rental unit", 
+                                     "Entire/Unit",
+                              ifelse(data$f_property_type== "Entire serviced apartment",
+                                     "Entire/Apt",
+                              ifelse(data$f_property_type== "Private room in serviced apartment",
+                                     "Room/Apt",
+                              ifelse(data$f_property_type== "Private room in rental unit", 
+                                     "Room/Unit", ".")))))
+
+
+data <- data %>%
+  filter(accommodates > 1 & accommodates < 7)
+
+data <- data %>%
+  mutate(n_accommodates = accommodates)
+
+
+
+datasummary(room_type ~ N + Percent() , data = data )
+# 83% entire, 17% room
+
+data <- data %>%
+  mutate(f_room_type = factor(room_type))
+
+data$f_room_type <- factor(ifelse(data$f_room_type== "Entire home/apt", "Entire/Apt",
+    ifelse(data$f_room_type== "Private room", "Private", ".")))
+
+
+###### LIST
+
+nums <- unlist(lapply(data, is.numeric))  
+data_num <- data[ , nums]
+
+#potential
+table(data$calculated_host_listings_count )
+table(data$accommodates)
+table(data$minimum_nights) # cut method, 1-2-3-4-5-6-7, above dont care/typo
+table(data$number_of_reviews) # make any? no
+table(data$review_scores_rating) # none
+table(data$reviews_per_month)  # none
+
+bols <- unlist(lapply(data, is.logical))  
+data_bols <- data[ , bols]
+
+#bol just 0/1:
+table(data$host_is_superhost)
+table(data$host_identity_verified)
+table(data$instant_bookable)
+
+
+texts <- unlist(lapply(data, is.character))  
+data_texts <- data[ , texts]
+
+# 23, 4 factor so far, left: 
+
+data$host_response_time #-4k missing, too much
+data$host_response_rate #-4k missing, too much
+data$amenities # done ,d 
+data$price # done, kept
+table(data$host_verifications) # government ID
+table(data$neighbourhood_cleansed) # below 100 dummy
+data$bathrooms_text # 1-2-many
+
+is.Date <- function(x) inherits(x, 'Date')
+datess <- unlist(lapply(data, is.Date))  
+data_dates <- data[ , datess]
+
+#potential
+table(data$host_since) # some yearly
+table(data$last_review)
+
+###### LIST
+
+
+
+unique_amenities <-  unique(trimws(gsub("[[]" , "" ,gsub("[]]" , "" ,gsub("\"" , "" ,unlist(strsplit(as.character(data$amenities), ",")))))))
+
+key_words <- c("hdtv", "oven" , "wifi" ,  "refrigerator" , 
+               "garage" ,  "pool" ,  "gym" , 
+              "grill" , "coffee"  , "dryer" ,
+              "washer" ,  "parking" , "sound system" , "air conditioning" ,
+              "elevator")
+
+for (x in key_words) {
+  
+  unique_amenities_mod <- c()
+  
+  for (i in seq_along(unique_amenities)) {
+    new_item <- ifelse(grepl( x , tolower(unique_amenities[i]), fixed = TRUE) , 
+                       tolower( x ) , unique_amenities[i] )
+    unique_amenities_mod <- c(unique_amenities_mod , new_item)
+  }
+  
+  unique_amenities <-  unique(unique_amenities_mod)
+  
+}
+
+
+for(p in key_words) data <- data %>% 
+      mutate(!! p := +(ifelse((grepl( p, tolower(data$amenities), fixed = TRUE)),1,0)))
+
+data <- rename(data, c(air_conditioning = `air conditioning`, 
+                       sound_system = `sound system` ))
+
+
+data <- data %>% 
+  mutate(  oven = ifelse(data$oven == 1 , 1 , 
+                          ifelse((grepl( "stove", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+data <- data %>% 
+  mutate(  air_conditioning = ifelse(data$air_conditioning == 1 , 1 , 
+                          ifelse((grepl( "AC unit", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+
+data <- data %>% 
+  mutate(  television = 
+             ifelse((grepl( "tv", gsub("hdtv" , "television" , 
+                                       tolower(data$amenities)), fixed = TRUE)),1,0) )
+ 
+
+dummies <- names(data)[seq(78,93)]
+
+data <- data %>%
+  mutate_at(vars(dummies), funs("d"= (.)))
+# rename columns
+dnames <- data %>%
+  select(ends_with("_d")) %>%
+  names()
+dnames_i <- match(dnames, colnames(data))
+colnames(data)[dnames_i] <- paste0("d_", tolower(gsub("[^[:alnum:]_]", "",dummies)))
+
+data$price <- as.integer(gsub("[$]" , "" , gsub("," , "", data$price)))
+
+
+data <- data %>% 
+  mutate(  n_host_governmentid =  ifelse((grepl( "government", tolower(data$host_verifications), fixed = TRUE)),1,0) )
+
+
+large_neighboorhoods <- data.table(data)[, .(.N ) , 
+                                         by = neighbourhood_cleansed ][ N >= 100 , neighbourhood_cleansed ]
+
+data <- data %>% 
+  mutate(  f_neighbourhood_cleansed =  
+             factor(ifelse(neighbourhood_cleansed %in% large_neighboorhoods,
+                    neighbourhood_cleansed,"small neighboorhoods")))
+
+data <- data %>% 
+  mutate(  n_bathrooms_text =  
+             ifelse(ifelse(is.na(bathrooms_text) ,"1 bath" , bathrooms_text) %in% 
+                    bath_missing ,
+              "1 bath" , ifelse(is.na(bathrooms_text) ,"1 bath" , bathrooms_text) ))
+
+
+data <- data %>% 
+  mutate(  n_bathrooms_text =  
+             as.numeric(unlist(regmatches(n_bathrooms_text,
+                                          gregexpr("[[:digit:]]+\\.*[[:digit:]]*",
+                                                   n_bathrooms_text)))))
+
+data <- data %>% 
+  mutate(  n_bathrooms_text = 
+             ifelse(n_bathrooms_text == 0 , 1 , n_bathrooms_text))
+
+
+
+data <- data %>% 
+  mutate(   flag_minimum_nights =
+              ifelse(minimum_nights > 7 , 1,0) ,
+              n_minimum_nights =  
+              ifelse(minimum_nights > 7 , 7,minimum_nights) )
+
+
+data <- data %>% 
+  mutate(  n_host_is_superhost =  
+             ifelse(host_is_superhost , 1,0) )
+
+
+data <- data %>% 
+  mutate(  n_host_identity_verified =  
+             ifelse(host_identity_verified , 1,0) )
+
+
+data <- data %>% 
+  mutate(  n_instant_bookable =  
+             ifelse(instant_bookable , 1,0) )
+
+data <- data %>% 
+  mutate(  n_bedrooms  =  bedrooms )
+
+data <- data %>% 
+  mutate(  n_number_of_reviews  =  number_of_reviews )
+
+data <- data %>%
+  mutate(
+    n_host_since = as.numeric(as.Date(calendar_last_scraped,format="%Y-%m-%d") -
+                                as.Date(host_since ,format="%Y-%m-%d")))
+
+# Correlation
+
+data_nums <- keep( data , is.numeric )
+cT <- round( cor( data_nums , use = "complete.obs") , 2 )
+cT[ upper.tri( cT ) ] <- NA
+melted_cormat <- melt( cT , na.rm = TRUE)
+
+data.table(melted_cormat)[Var1 == "price" | Var2 == "price" , .(Var1 , Var2 ,
+                                  value = abs(value) )][order(-value)]
+
+#  accomodates > bedrooms , number_of_reviews , n_minimum_nights  
+# n_host_is_superhost  
+#  
+# d_pool, d_refrigerator   d_oven  d_gym  d_coffee   d_television , d_air_conditioning  , washer  ,
+
+ggplot( data = melted_cormat, aes( Var2 , Var1 , fill = value ) )+
+  geom_tile( color = "white" ) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Correlation") +
+  theme_bw()+ 
+  theme( axis.text.x = element_text(angle = 45, vjust = 1, 
+                                    size = 8, hjust = 1))+
+  labs(y="",x="")+
+  coord_fixed()
+
+
+data <- data %>%
+  select(matches("^d_.*|^n_.*|^f_.*|^flag_.*"), price)
+
 
 # DROP Y MISSING
 
@@ -25,54 +287,72 @@ data <- data %>%
   drop_na(price)
 
 
+# Check how many missing
+
+to_filter <- sapply(data, function(x) sum(is.na(x)))
+to_filter[to_filter > 0]
+
+
+
 # IMPUTE IF FEW
 
-data <- data %>%
-  mutate(
-    n_bathrooms =  ifelse(is.na(n_bathrooms), median(n_bathrooms, na.rm = T), n_bathrooms), #assume at least 1 bath
-    n_beds = ifelse(is.na(n_beds), n_accommodates, n_beds), #assume n_beds=n_accomodates
-    f_bathroom=ifelse(is.na(f_bathroom),1, f_bathroom),
-    f_minimum_nights=ifelse(is.na(f_minimum_nights),1, f_minimum_nights),
-    f_number_of_reviews=ifelse(is.na(f_number_of_reviews),1, f_number_of_reviews),
-    ln_beds=ifelse(is.na(ln_beds),0, ln_beds)
-  )
 
-# Drop if many missing but dont care
-
-to_drop <- c("usd_cleaning_fee", "p_host_response_rate","d_reviews_per_month")
-data <- data %>%
-  select(-one_of(to_drop))
-
-
-# Many missing + important: replace but add flag to see if it matters if missing
 
 data <- data %>%
   mutate(
-    flag_days_since = ifelse(is.na(n_days_since),1, 0),
-    n_days_since    =  ifelse(is.na(n_days_since), median(n_days_since, na.rm = T), n_days_since),
-    flag_review_scores_rating = ifelse(is.na(n_review_scores_rating),1, 0),
-    n_review_scores_rating    = ifelse(is.na(n_review_scores_rating), median(n_review_scores_rating, na.rm = T), n_review_scores_rating),
-    flag_reviews_per_month    = ifelse(is.na(n_reviews_per_month),1, 0),
-    n_reviews_per_month       = ifelse(is.na(n_reviews_per_month), median(n_reviews_per_month, na.rm = T), n_reviews_per_month)
-  )
+    n_host_is_superhost =  ifelse(is.na(n_host_is_superhost), 0, n_host_is_superhost), 
+    n_host_identity_verified =  ifelse(is.na(n_host_identity_verified), 
+                                       0, n_host_identity_verified), 
+    flag_n_bedrooms = ifelse(is.na(n_bedrooms), 1 , 0 ),
+    n_bedrooms =  ifelse(is.na(n_bedrooms), 
+                         median(n_bedrooms , na.rm = T), n_bedrooms),
+    n_host_since = ifelse(is.na(n_host_since), median(n_host_since , na.rm = T), 
+                          n_host_since))
+
+
+# Deal with extreme price
+
+data <-  data %>% filter(price <= 1100 & price > 50 )
+
+
+ggplot( data , aes(x = price)) +
+  geom_histogram( fill='navyblue', color = 'white' , bins = 30 ) +
+  labs( x = "price") +
+  theme_bw()
 
 # To check again how many were missing
 
-datasummary( factor(flag_days_since) + factor(flag_review_scores_rating) + factor(flag_reviews_per_month) ~ N , data )
+datasummary( factor(flag_minimum_nights)  ~ N , data )
+
+
+chck_sp <- function( x_var , x_lab ){
+  ggplot( data , aes(x = x_var, y = price)) +
+    geom_point(color='red',size=2,alpha=0.6) +
+    geom_smooth(method="loess" , formula = y ~ x )+
+    labs(x = x_lab, y = "price") +
+    theme_bw() +
+    theme(axis.title.y = element_text(size = 10) )
+}
+
+chck_sp(data$n_accommodates ,"accomodates") ## linear
+chck_sp(data$n_bedrooms,"n_bedrooms") ## linear spline at 2?
+chck_sp(data$n_number_of_reviews,"number_of_reviews") + 
+  scale_x_continuous(breaks = seq( 0 , 460 , 20)) ## quad / spline 10-30
+chck_sp(data$n_minimum_nights,"minimum_nights") ##
+chck_sp(data$n_host_since,"n_host_since") ##
+
+table(data$n_host_identity_verified) # room group?
+
+library(skimr)
+skim(data_num)
 
 # Functional forms
 
 data <- data %>%
   mutate(
-    ln_days_since = log(n_days_since+1),
-    ln_days_since2 = log(n_days_since+1)^2,
-    ln_days_since3 = log(n_days_since+1)^3 ,
-    n_days_since2=n_days_since^2,
-    n_days_since3=n_days_since^3,
-    ln_review_scores_rating = log(n_review_scores_rating),
-    ln_days_since=ifelse(is.na(ln_days_since),0, ln_days_since),
-    ln_days_since2=ifelse(is.na(ln_days_since2),0, ln_days_since2),
-    ln_days_since3=ifelse(is.na(ln_days_since3),0, ln_days_since3),
+    n_number_of_reviews2=n_number_of_reviews^2,
+    n_number_of_reviews3=n_number_of_reviews^3,
+    ln_price = log(price)
   )
 
 # Check y
@@ -85,20 +365,16 @@ to_filter <- sapply(data, function(x) sum(is.na(x)))
 to_filter[to_filter > 0]
 
 
-# Drop those you cant predict, too unique
+# Group those you cant predict, too unique
+unique(data$f_property_type)
 
 data <- data %>%
-  filter(n_accommodates < 8
+  mutate(f_property_type = ifelse(f_property_type == "Room/Apt" |
+                                    f_property_type == "Room/Unit" ,
+                                  "Room" ,
+                                  f_property_type)
   )
 
-# Check here
-
-skimr::skim(data)
-
-# Check which variables seem to be important, also to see which to group
-# If small and relatively same, group, interaction
-datasummary( f_property_type*f_room_type*price + f_bed_type*price ~ Mean + SD + P25 + P75 + N, data = data )
-datasummary( f_property_type*f_room_type*f_bed_type*price ~ Mean + SD + P25 + P75 + N, data = data )
 
 
 # Check y, do you need log
@@ -164,13 +440,16 @@ ggplot(datau, aes(x = factor(n_accommodates), y = price,
 # Group variables
 
 
-basic_lev  <- c("n_accommodates", "n_beds", "f_property_type", "f_room_type", "n_days_since", "flag_days_since")
 
-basic_add <- c("f_bathroom","f_cancellation_policy","f_bed_type")
+basic_lev  <- c("n_accommodates", "n_bedrooms", "f_property_type", "f_room_type", "number_of_reviews", "n_minimum_nights" , "n_host_is_superhost")
 
-reviews <- c("f_number_of_reviews","n_review_scores_rating", "flag_review_scores_rating")
+basic_add <- c("f_neighbourhood_cleansed","n_instant_bookable")
 
-poly_lev <- c("n_accommodates2", "n_days_since2", "n_days_since3")
+reviews <- c("n_number_of_reviews" )
+
+host_lev <- c("n_host_governmentid", "n_host_since","n_host_identity_verified")
+
+poly_lev <- c("n_number_of_reviews3" , "n_number_of_reviews2" )
 
 amenities <-  grep("^d_.*", names(data), value = TRUE)
 
@@ -189,18 +468,18 @@ X3  <- c(paste0("(f_property_type + f_room_type + f_cancellation_policy + f_bed_
 
 modellev1 <- " ~ n_accommodates"
 modellev2 <- paste0(" ~ ",paste(basic_lev,collapse = " + "))
-modellev3 <- paste0(" ~ ",paste(c(basic_lev, basic_add,reviews),collapse = " + "))
-modellev4 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,poly_lev),collapse = " + "))
-modellev5 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,poly_lev,X1),collapse = " + "))
-modellev6 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,poly_lev,X1,X2),collapse = " + "))
-modellev7 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,poly_lev,X1,X2,amenities),collapse = " + "))
-modellev8 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,poly_lev,X1,X2,amenities,X3),collapse = " + "))
+modellev3 <- paste0(" ~ ",paste(c(basic_lev, basic_add,host_lev),collapse = " + "))
+modellev4 <- paste0(" ~ ",paste(c(basic_lev,basic_add,host_lev,reviews,poly_lev),collapse = " + "))
+modellev5 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,host_lev,poly_lev,X1),collapse = " + "))
+modellev6 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,host_lev,poly_lev,X1,X2),collapse = " + "))
+modellev7 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,host_lev,poly_lev,X1,X2,amenities),collapse = " + "))
+modellev8 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,host_lev,poly_lev,X1,X2,amenities,X3),collapse = " + "))
 
 
 # Holdout set
 
 smp_size <- floor(0.2 * nrow(data))
-set.seed(20180123)
+set.seed(20220209)
 holdout_ids <- sample( seq_len( nrow( data ) ) , size = smp_size )
 data$holdout <- 0
 data$holdout[holdout_ids] <- 1
@@ -213,7 +492,7 @@ data_work <- data %>% filter(holdout == 0)
 ## K = 5
 k_folds <- 5
 # Define seed value
-seed_val <- 20210117
+seed_val <- 20220210
 
 # Do the iteration
 for ( i in 1:8 ){
