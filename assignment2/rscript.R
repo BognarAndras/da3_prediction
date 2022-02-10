@@ -366,15 +366,14 @@ to_filter[to_filter > 0]
 
 
 # Group those you cant predict, too unique
-unique(data$f_property_type)
+table(data$f_property_type)
 
 data <- data %>%
-  mutate(f_property_type = ifelse(f_property_type == "Room/Apt" |
-                                    f_property_type == "Room/Unit" ,
-                                  "Room" ,
-                                  f_property_type)
+  mutate(f_property_type = factor(ifelse(as.character(f_property_type) %in% 
+                                           c("Room/Apt" , "Room/Unit" ) ,
+                                         "Room", 
+                                         as.character(f_property_type)))
   )
-
 
 
 # Check y, do you need log
@@ -402,29 +401,34 @@ ggplot(data=datau, aes(x=ln_price)) +
 
 # For small categorical use source file
 
-source("Interaction_graph.R")
-
-p1 <- wage_diff_by_variables(earnings_it, "no_child", 
-                             "female" ,
-                             "Number of Children" ,"Gender (Blue female)")
-p2 <- wage_diff_by_variables(earnings_it, "poc", "foreign_born" ,
-                             "Person of color (1 Yes)" ,"Foreigner (Blue yes)")
-p3 <- wage_diff_by_variables(earnings_it, "age", "poc" ,  
-                             "Age" ,"Person of color (Blue Yes)")
-p4 <- wage_diff_by_variables(earnings_it, "age", "foreign_born" , 
-                             "Age" ,"Foreigner (Blue yes)")
-p5 <- wage_diff_by_variables(earnings_it, "age", "female" ,  
-                             "Age" ,"Gender (Blue female")
-p6 <- wage_diff_by_variables(earnings_it, "poc", "female" , 
-                             "Person of color (1 Yes)" ,"Gender (Blue female")
+source("interactions.R")
+as.name(as.character(data$n_accommodates))
+p1 <- price_diff_by_variables(data, "f_room_type", 
+                             "n_instant_bookable" ,
+                             "room type" ,"bookable (1 Yes)")
+p2 <- price_diff_by_variables(data, "n_minimum_nights", 
+                              "n_instant_bookable" ,
+                              "n_minimum_nights" ,"bookable (1 Yes)")
+p3 <- price_diff_by_variables(data, "n_bedrooms", 
+                             "n_instant_bookable" ,
+                             "n_bedrooms" ,"bookable (1 Yes)")
+p4 <- price_diff_by_variables(data, "n_bedrooms", 
+                              "n_host_governmentid" ,
+                              "n_bedrooms" ,"n_host_governmentid (1 Yes)")
+p5 <- price_diff_by_variables(data, "n_bedrooms", 
+                             "n_host_identity_verified" ,
+                             "n_bedrooms" ,"n_host_identity_verified (1 Yes)")
+p6 <- price_diff_by_variables(data, "n_bedrooms", 
+                              "n_host_is_superhost" ,
+                              "n_bedrooms" ,"n_host_is_superhost (1 Yes)")
 
 g_interactions <- plot_grid(p1, p2, p3, p4, p5, p6, nrow=3, ncol=2)
 g_interactions
 
 # For x with big variance use boxplot
 
-ggplot(datau, aes(x = factor(n_accommodates), y = price,
-                  fill = factor(f_property_type), color=factor(f_property_type))) +
+ggplot(data, aes(x = factor(f_neighbourhood_cleansed), y = price,
+                  fill = factor(n_instant_bookable), color=factor(n_instant_bookable))) +
   geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
   stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
   scale_color_manual(name="",
@@ -441,7 +445,7 @@ ggplot(datau, aes(x = factor(n_accommodates), y = price,
 
 
 
-basic_lev  <- c("n_accommodates", "n_bedrooms", "f_property_type", "f_room_type", "number_of_reviews", "n_minimum_nights" , "n_host_is_superhost")
+basic_lev  <- c("n_accommodates", "n_bedrooms", "f_property_type", "f_room_type", "n_number_of_reviews", "n_minimum_nights" , "n_host_is_superhost")
 
 basic_add <- c("f_neighbourhood_cleansed","n_instant_bookable")
 
@@ -456,9 +460,9 @@ amenities <-  grep("^d_.*", names(data), value = TRUE)
 
 # Interaction dummies 
 
-X1  <- c("f_room_type*f_property_type",  "f_room_type*d_familykidfriendly")
-X2  <- c("d_airconditioning*f_property_type", "d_cats*f_property_type", "d_dogs*f_property_type")
-X3  <- c(paste0("(f_property_type + f_room_type + f_cancellation_policy + f_bed_type) * (",
+X1  <- c("f_room_type*f_property_type",  "n_instant_bookable*n_minimum_nights")
+X2  <- c("n_instant_bookable*f_neighbourhood_cleansed", "n_instant_bookable*n_bedrooms", "n_host_identity_verified*n_bedrooms", "n_host_identity_verified*f_neighbourhood_cleansed" )
+X3  <- c(paste0("(f_property_type + f_room_type + n_bedrooms) * (",
                 paste(amenities, collapse=" + "),")"))
 
 
@@ -488,7 +492,12 @@ data_work <- data %>% filter(holdout == 0)
 
 # Checking models on train-test data
 
-
+feols( price ~n_accommodates + n_bedrooms + f_property_type + f_room_type + 
+         n_number_of_reviews + n_minimum_nights + n_host_is_superhost + 
+         f_neighbourhood_cleansed + n_instant_bookable + n_number_of_reviews + 
+         n_host_governmentid + n_host_since + n_host_identity_verified + 
+         n_number_of_reviews3 + n_number_of_reviews2 + f_room_type * 
+         f_property_type + n_instant_bookable * n_minimum_nights , data = data_work , vcov='hetero' )
 ## K = 5
 k_folds <- 5
 # Define seed value
@@ -536,7 +545,7 @@ model_results
 
 # LASSO
 # Most complex model
-vars_model_8 <- c("price", basic_lev,basic_add,reviews,poly_lev,X1,X2,amenities,X3)
+vars_model_8 <- c("price", basic_lev,basic_add,reviews,poly_lev,host_lev,X1,X2,amenities,X3)
 
 # Tuning params
 train_control <- trainControl( method = "cv", number = k_folds)
@@ -628,3 +637,182 @@ ggplot( data_holdout , aes( y = price , x = predLp ) ) +
   ylim(-1,max(data_holdout$price))+
   labs(x='Predicted price (US$)',y='Price (US$)')+
   theme_bw()
+
+# RF
+
+# set tuning
+tune_grid <- expand.grid(
+  .mtry = c(3),
+  .splitrule = "variance",
+  .min.node.size = c(20)
+)
+
+predictors_1 <- c(basic_lev)
+predictors_2 <- c(basic_lev,basic_add,reviews,host_lev,poly_lev,amenities)
+predictors_3 <- c(basic_lev,basic_add,reviews,host_lev,amenities)
+
+
+set.seed(seed_val)
+system.time({
+  rf_model_1 <- train(
+    formula(paste0("price ~", paste0(predictors_1, collapse = " + "))),
+    data = data_work,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    importance = "impurity"
+  )
+})
+rf_model_1
+
+tune_grid <- expand.grid(
+  .mtry = c(5),
+  .splitrule = "variance",
+  .min.node.size = c(20)
+)
+
+
+set.seed(seed_val)
+system.time({
+  rf_model_2 <- train(
+    formula(paste0("price ~", paste0(predictors_2, collapse = " + "))),
+    data = data_work,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    importance = "impurity"
+  )
+})
+rf_model_2
+
+
+results <- resamples(
+  list(
+    model_1  = rf_model_1,
+    model_2  = rf_model_2
+  )
+)
+summary(results)
+
+# Variable Importance Plots
+
+
+rf_model_2_var_imp <- ranger::importance(rf_model_2$finalModel)/1000
+
+ggplot(rf_model_2_var_imp_df[1:10,], aes(x=reorder(varname, imp), y=imp_percentage)) +
+  geom_point(color='red', size=1) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), color='red', size=0.75) +
+  ylab("Importance (Percent)") +
+  xlab("Variable Name") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw()
+
+
+varnames <- rf_model_2$finalModel$xNames
+f_neighbourhood_cleansed_varnames <- grep("f_neighbourhood_cleansed",varnames, value = TRUE)
+f_cancellation_policy_varnames <- grep("f_cancellation_policy",varnames, value = TRUE)
+f_bed_type_varnames <- grep("f_bed_type",varnames, value = TRUE)
+f_property_type_varnames <- grep("f_property_type",varnames, value = TRUE)
+f_room_type_varnames <- grep("f_room_type",varnames, value = TRUE)
+
+groups <- list(f_neighbourhood_cleansed=f_neighbourhood_cleansed_varnames,
+               f_cancellation_policy = f_cancellation_policy_varnames,
+               f_bed_type = f_bed_type_varnames,
+               f_property_type = f_property_type_varnames,
+               f_room_type = f_room_type_varnames,
+               f_bathroom = "f_bathroom",
+               n_days_since = "n_days_since",
+               n_accommodates = "n_accommodates",
+               n_beds = "n_beds")
+rf_model_2_var_imp_grouped <- group.importance(rf_model_2$finalModel, groups)
+rf_model_2_var_imp_grouped_df <- data.frame(varname = rownames(rf_model_2_var_imp_grouped),
+                                            imp = rf_model_2_var_imp_grouped[,1])  %>%
+  mutate(imp_percentage = imp/sum(imp))
+
+ggplot(rf_model_2_var_imp_grouped_df, aes(x=reorder(varname, imp), y=imp_percentage)) +
+  geom_point(color='red', size=1) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), color='red', size=0.7) +
+  ylab("Importance (Percent)") +   xlab("Variable Name") +
+  coord_flip() +
+  # expand=c(0,0),
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw()
+
+
+final_models <-
+  list("OLS" = ols_model,
+       "LASSO (model w/ interactions)" = lasso_model,
+       "CART" = cart_model,
+       "Random forest 1: smaller model" = rf_model_1,
+       "Random forest 2: extended model" = rf_model_2,
+       "GBM"  = gbm_model)
+
+results <- resamples(final_models) %>% summary()
+results
+
+
+result_4 <- imap(final_models, ~{
+  mean(results$values[[paste0(.y,"~RMSE")]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("CV RMSE" = ".")
+
+result_4
+
+result_5 <- map(final_models, ~{
+  RMSE(predict(.x, newdata = data_holdout), data_holdout[["price"]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("Holdout RMSE" = ".")
+
+result_5
+
+
+
+
+seed_val <- 20220210
+
+# Do the iteration
+for ( i in 1:8 ){
+  print(paste0( "Estimating model: " ,i ))
+  # Get the model name
+  model_name <-  paste0("modellev",i)
+  model_pretty_name <- paste0("M",i,"")
+  # Specify the formula
+  yvar <- "ln_price"
+  xvars <- eval(parse(text = model_name))
+  formula <- formula(paste0(yvar,xvars))
+  
+  # Estimate model on the whole sample
+  model_work_data <- feols( formula , data = data_work , vcov='hetero' )
+  #  and get the summary statistics
+  fs  <- fitstat(model_work_data,c('rmse','r2','bic'))
+  BIC <- fs$bic
+  r2  <- fs$r2
+  rmse_train <- fs$rmse
+  ncoeff <- length( model_work_data$coefficients )
+  
+  # Do the k-fold estimation
+  set.seed(seed_val)
+  cv_i <- train( formula, data_work, method = "lm", 
+                 trControl = trainControl(method = "cv", number = k_folds))
+  rmse_test <- mean( cv_i$resample$RMSE )
+  
+  # Save the results
+  model_add <- tibble(Model=model_pretty_name, Coefficients=ncoeff,
+                      R_squared=r2, BIC = BIC, 
+                      Training_RMSE = rmse_train, Test_RMSE = rmse_test )
+  if ( i == 1 ){
+    model_results <- model_add
+  } else{
+    model_results <- rbind( model_results , model_add )
+  }
+}
+
+# Check summary table END of OLS
+model_results
+
+predict()
+
+model_results$Test_RMSE
+data$lnplev <- exp(model_results$Test_RMSE)*exp((model_results$Test_RMSE^2)/2)
+lnp2_new_lev <- exp(pred3_new_log[1])*exp((rmse3_log^2)/2)
