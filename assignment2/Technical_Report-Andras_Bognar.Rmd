@@ -1,0 +1,633 @@
+---
+title: Assignment 2 - Predicting Rio Airbnb Prices Technical
+author: "A. BOGNAR"
+output: 
+  pdf_document:
+    extra_dependencies: ["float"]
+urlcolor: red
+geometry: margin=0.5in
+
+---
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Loading packages
+
+
+library(tidyverse)
+library(modelsummary)
+library(kableExtra)
+library(ggpubr)
+library(fixest)
+library(xtable)
+library(caret)
+library(data.table)
+library(cowplot)
+library(knitr)
+
+```
+
+## Introduction
+
+This is a supplementary paper to *Predicting Rio Airbnb Prices Summary* explaining the technical decisions made in the analysis.
+
+## EDA/Feature engineering
+
+For predictive variables the following decisions were made:
+
+* *Units* are similar to *Apartments* in prices and most major characteristics, within the descriptions and advertisements, they are also referred to as apartments. Thus these two categories were used for the analysis.
+* From *host verifications* most channels (email, facebook) are listed for nearly all apartments. Government certificates are less common and may be considered to be important, therefore it was included as binary variable.
+* Nearly half of the *neighborhoods* consist of less than 100 units. With cross validation and holdout samples, these could not be reliable predicted. I considered adding a dummy variable for these districts, however, I wanted to see how these smaller districts as together compare to other districts, thus they were renamed to a separated category.
+* For *bathrooms* values are provided in text format. A few were listed with 0 bathrooms, but upon checking the adds these turned out to be mistakes and were changed to 1 bathroom. Otherwise, numbers were extracted from the texts, some were listed with 1.5, 2.5 bathrooms. These were also kept as the variation may still be relevant.
+* Where number of bedrooms was missing (about 7% of data), the median, 1 bedroom was imputed. Flag was generated.
+* For *number of nights* many were provided with over a week. Some extreme cases are definitely erroneous. However, even for anything above a week, I considered it may not make a difference for rentees. Further categories 1 week - few weeks may also make sense.
+* *Host* related variables were added as rentees might prefer to choose trusted hosts.
+* *Number of reviews* seemed to show quadratic association with price, so polynomials were generated.
+* For *amenities* considered the below code chunk:
+
+```{r , eval=FALSE}
+
+
+# Dealing with amenities
+
+# First, get all unique amenities
+
+unique_amenities <-  unique(trimws(gsub("[[]" , "" ,gsub("[]]" , "" 
+                                                         ,gsub("\"" , "" ,unlist(strsplit(as.character(data$amenities), 
+                                                                                          ",")))))))
+
+# Use this list to find those relevant for prediction
+
+key_words <- c("hdtv", "oven" , "wifi" ,  "refrigerator" , 
+               "garage" ,  "pool" ,  "gym" , 
+              "grill" , "coffee"  , "dryer" ,
+              "washer" ,  "parking" , "sound system" , "air conditioning" ,
+              "elevator")
+
+# Double loop to select the list items from all unique possibilities
+# This prevents observations not being selected for the item
+# if word is part of string eg. "Sony sound system" instead of "sound system".
+# Also minding capitalization
+
+for (x in key_words) {
+  
+  unique_amenities_mod <- c()
+  
+  for (i in seq_along(unique_amenities)) {
+    new_item <- ifelse(grepl( x , tolower(unique_amenities[i]), fixed = TRUE) , 
+                       tolower( x ) , unique_amenities[i] )
+    unique_amenities_mod <- c(unique_amenities_mod , new_item)
+  }
+  
+  unique_amenities <-  unique(unique_amenities_mod)
+  
+}
+
+# Add binary columns for amenities
+
+for(p in key_words) data <- data %>% 
+      mutate(!! p := +(ifelse((grepl( p, tolower(data$amenities), fixed = TRUE)),1,0)))
+
+# Correct column names
+
+data <- rename(data, c(air_conditioning = `air conditioning`, 
+                       sound_system = `sound system` ))
+
+# Some key words have synonyms
+
+data <- data %>% 
+  mutate(  oven = ifelse(data$oven == 1 , 1 , 
+                          ifelse((grepl( "stove", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+data <- data %>% 
+  mutate(  air_conditioning = ifelse(data$air_conditioning == 1 , 1 , 
+                          ifelse((grepl( "AC unit", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+# Separate television from hdtv
+
+data <- data %>% 
+  mutate(  television = 
+             ifelse((grepl( "tv", gsub("hdtv" , "television" , 
+                                       tolower(data$amenities)), fixed = TRUE)),1,0) )
+ 
+# add dummy d_ to column names
+
+dummies <- names(data)[seq(78,93)]
+
+data <- data %>%
+  mutate_at(vars(dummies), funs("d"= (.)))
+
+dnames <- data %>%
+  select(ends_with("_d")) %>%
+  names()
+dnames_i <- match(dnames, colnames(data))
+colnames(data)[dnames_i] <- paste0("d_", tolower(gsub("[^[:alnum:]_]", "",dummies)))
+
+
+```
+
+Several steps were required:
+
+1. List all unique items provided
+2. Of these select those that are not too common, but also not too special, so they make sense as predictors
+3. Reformat text to make sure no observation is misscharacterized due to capitalization or multiple words used
+4. Consider synonyms
+5. For televisions, I grouped HDTVs separately from standard televisions
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Get the data, filter apartments mid-sized, always rename columns with
+# f_ facotr n_ number d_ amenities flag_ for dummies
+
+data <- read_csv("https://raw.githubusercontent.com/BognarAndras/da3_prediction/main/assignment2/raw/listings.csv")
+
+
+data <- data %>%
+  filter(property_type %in% c("Entire rental unit" , "Entire serviced apartment" ,
+                             "Private room in rental unit" ,
+                             "Private room in serviced apartment"))
+
+data <- data %>%
+  mutate(f_property_type = factor(property_type))
+
+data$f_property_type <- factor(ifelse(data$f_property_type== "Entire rental unit", 
+                                     "Entire/Unit",
+              ifelse(data$f_property_type== "Entire serviced apartment",
+                                     "Entire/Apt",
+              ifelse(data$f_property_type== "Private room in serviced apartment",
+                                     "Room/Apt",
+              ifelse(data$f_property_type== "Private room in rental unit", 
+                                     "Room/Unit", ".")))))
+
+
+data <- data %>%
+  filter(accommodates > 1 & accommodates < 7)
+
+data <- data %>%
+  mutate(n_accommodates = accommodates)
+
+
+
+```
+
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Data cleaning 
+
+# Room type factorized
+
+data <- data %>%
+  mutate(f_room_type = factor(room_type))
+
+data$f_room_type <- factor(ifelse(data$f_room_type== "Entire home/apt", "Entire/Apt",
+    ifelse(data$f_room_type== "Private room", "Private", ".")))
+
+# Dealing with amenities
+
+# First, get all unique amenities
+
+unique_amenities <-  unique(trimws(gsub("[[]" , "" ,gsub("[]]" , "" ,gsub("\"" , "" ,unlist(strsplit(as.character(data$amenities), ",")))))))
+
+# Use this list to find those relevant for prediction
+
+key_words <- c("hdtv", "oven" , "wifi" ,  "refrigerator" , 
+               "garage" ,  "pool" ,  "gym" , 
+              "grill" , "coffee"  , "dryer" ,
+              "washer" ,  "parking" , "sound system" , "air conditioning" ,
+              "elevator")
+
+# Double loop to select the list items from all unique possibilities
+# This prevents observations not being selected for the item
+# if word is part of string eg. "Sony sound system" instead of "sound system".
+# Also minding capitalization
+
+for (x in key_words) {
+  
+  unique_amenities_mod <- c()
+  
+  for (i in seq_along(unique_amenities)) {
+    new_item <- ifelse(grepl( x , tolower(unique_amenities[i]), fixed = TRUE) , 
+                       tolower( x ) , unique_amenities[i] )
+    unique_amenities_mod <- c(unique_amenities_mod , new_item)
+  }
+  
+  unique_amenities <-  unique(unique_amenities_mod)
+  
+}
+
+# Add binary columns for amenities
+
+for(p in key_words) data <- data %>% 
+      mutate(!! p := +(ifelse((grepl( p, tolower(data$amenities), fixed = TRUE)),1,0)))
+
+# Correct column names
+
+data <- rename(data, c(air_conditioning = `air conditioning`, 
+                       sound_system = `sound system` ))
+
+# Some key words have synonyms
+
+data <- data %>% 
+  mutate(  oven = ifelse(data$oven == 1 , 1 , 
+                          ifelse((grepl( "stove", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+data <- data %>% 
+  mutate(  air_conditioning = ifelse(data$air_conditioning == 1 , 1 , 
+                          ifelse((grepl( "AC unit", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+# Separate television from hdtv
+
+data <- data %>% 
+  mutate(  television = 
+             ifelse((grepl( "tv", gsub("hdtv" , "television" , 
+                                       tolower(data$amenities)), fixed = TRUE)),1,0) )
+ 
+# add dummy d_ to column names
+
+dummies <- names(data)[seq(78,93)]
+
+data <- data %>%
+  mutate_at(vars(dummies), funs("d"= (.)))
+
+dnames <- data %>%
+  select(ends_with("_d")) %>%
+  names()
+dnames_i <- match(dnames, colnames(data))
+colnames(data)[dnames_i] <- paste0("d_", tolower(gsub("[^[:alnum:]_]", "",dummies)))
+
+# Correct price formatting
+
+data$price <- as.integer(gsub("[$]" , "" , gsub("," , "", data$price)))
+
+# For host verification, government verification seems unique predictor
+
+data <- data %>% 
+  mutate(  n_host_governmentid =  ifelse((grepl( "government", tolower(data$host_verifications), fixed = TRUE)),1,0) )
+
+# Cant meaningfully predict districts with few observations, group them
+# Maybe being in small district is meaningful predictor
+
+large_neighboorhoods <- data.table(data)[, .(.N ) , 
+                                         by = neighbourhood_cleansed ][ N >= 100 , neighbourhood_cleansed ]
+
+data <- data %>% 
+  mutate(  f_neighbourhood_cleansed =  
+             factor(ifelse(neighbourhood_cleansed %in% large_neighboorhoods,
+                    neighbourhood_cleansed,"small neighboorhoods")))
+
+# Bathroom numbers is in text format, extract numbers
+
+bath_missing <-  c("Private half-bath" , "Half-bath" , "Shared half-bath" )
+
+# 0 bathrooms are mistakes from users, they actually have 1 bathroom based on
+# links
+
+data <- data %>% 
+  mutate(  n_bathrooms_text =  
+             ifelse(ifelse(is.na(bathrooms_text) ,"1 bath" , bathrooms_text) %in% 
+                    bath_missing ,
+              "1 bath" , ifelse(is.na(bathrooms_text) ,"1 bath" , bathrooms_text) ))
+
+
+data <- data %>% 
+  mutate(  n_bathrooms_text =  
+             as.numeric(unlist(regmatches(n_bathrooms_text,
+                                          gregexpr("[[:digit:]]+\\.*[[:digit:]]*",
+                                                   n_bathrooms_text)))))
+
+data <- data %>% 
+  mutate(  n_bathrooms_text = 
+             ifelse(n_bathrooms_text == 0 , 1 , n_bathrooms_text))
+
+# More than a week required rent seems to be an error, group these
+
+
+data <- data %>% 
+  mutate(   flag_minimum_nights =
+              ifelse(minimum_nights > 7 , 1,0) ,
+              n_minimum_nights =  
+              ifelse(minimum_nights > 7 , 7,minimum_nights) )
+
+# Binary variables
+
+data <- data %>% 
+  mutate(  n_host_is_superhost =  
+             ifelse(host_is_superhost , 1,0) )
+
+
+data <- data %>% 
+  mutate(  n_host_identity_verified =  
+             ifelse(host_identity_verified , 1,0) )
+
+
+data <- data %>% 
+  mutate(  n_instant_bookable =  
+             ifelse(instant_bookable , 1,0) )
+# Numerics
+
+data <- data %>% 
+  mutate(  n_bedrooms  =  bedrooms )
+
+data <- data %>% 
+  mutate(  n_number_of_reviews  =  number_of_reviews )
+
+# For how long host has been posting
+
+data <- data %>%
+  mutate(
+    n_host_since = as.numeric(as.Date(calendar_last_scraped,format="%Y-%m-%d") -
+                                as.Date(host_since ,format="%Y-%m-%d")))
+# Keep relevant variables
+
+data <- data %>%
+  select(matches("^d_.*|^n_.*|^f_.*|^flag_.*"), price)
+
+# Deal with missing values, IMPUTE IF FEW, leave flag if considerable amount
+
+
+
+data <- data %>%
+  mutate(
+    n_host_is_superhost =  ifelse(is.na(n_host_is_superhost), 0, n_host_is_superhost), 
+    n_host_identity_verified =  ifelse(is.na(n_host_identity_verified), 
+                                       0, n_host_identity_verified), 
+    flag_n_bedrooms = ifelse(is.na(n_bedrooms), 1 , 0 ),
+    n_bedrooms =  ifelse(is.na(n_bedrooms), 
+                         median(n_bedrooms , na.rm = T), n_bedrooms),
+    n_host_since = ifelse(is.na(n_host_since), median(n_host_since , na.rm = T), 
+                          n_host_since))
+
+
+# Drop with extreme price
+
+data <-  data %>% filter(price <= 1100 & price > 50 )
+
+# Functional forms
+
+data <- data %>%
+  mutate(
+    n_number_of_reviews2=n_number_of_reviews^2,
+    n_number_of_reviews3=n_number_of_reviews^3,
+    ln_price = log(price)
+  )
+
+data <- data %>%
+  mutate(f_property_type = factor(ifelse(as.character(f_property_type) %in% 
+                                           c("Room/Apt" , "Room/Unit" ) ,
+                                         "Room", 
+                                         as.character(f_property_type)))
+  )
+
+# Group variables
+
+
+
+basic_lev  <- c("n_accommodates", "n_bedrooms", "f_property_type", "f_room_type", "n_number_of_reviews", "n_minimum_nights" , "n_host_is_superhost")
+
+basic_add <- c("f_neighbourhood_cleansed","n_instant_bookable" , "n_bathrooms_text")
+
+reviews <- c("n_number_of_reviews" )
+
+host_lev <- c("n_host_governmentid", "n_host_since","n_host_identity_verified")
+
+poly_lev <- c("n_number_of_reviews3" , "n_number_of_reviews2" )
+
+amenities <-  grep("^d_.*", names(data), value = TRUE)
+
+
+# Interaction dummies 
+
+X1  <- c("f_room_type*f_property_type",  "n_instant_bookable*n_minimum_nights" , "n_host_is_superhost*n_number_of_reviews")
+X2  <- c("n_instant_bookable*f_neighbourhood_cleansed", "n_instant_bookable*n_bedrooms", "n_host_identity_verified*n_bedrooms", "n_host_identity_verified*f_neighbourhood_cleansed" )
+X3  <- c(paste0("(f_property_type + f_room_type + n_bedrooms) * (",
+                paste(amenities, collapse=" + "),")"))
+
+
+```
+
+
+
+## Interactions
+
+Possible interactions were chosen based graphical checks such as the ones below.
+As well as one theory based decision: I thought the number of reviews may have different effect on price for *superhosts* since they are trusted members with possible following.
+
+
+```{r , echo = F, warning = F , message = F }
+source("interactions.R")
+
+p1 <- price_diff_by_variables(data, "f_room_type", 
+                             "n_instant_bookable" ,
+                             "room type" ,"bookable (1 Yes)")
+p2 <- price_diff_by_variables(data, "n_minimum_nights", 
+                              "n_instant_bookable" ,
+                              "n_minimum_nights" ,"bookable (1 Yes)")
+p3 <- price_diff_by_variables(data, "n_bedrooms", 
+                             "n_instant_bookable" ,
+                             "n_bedrooms" ,"bookable (1 Yes)")
+p4 <- price_diff_by_variables(data, "n_bedrooms", 
+                              "n_host_governmentid" ,
+                              "n_bedrooms" ,"n_host_governmentid (1 Yes)")
+p5 <- price_diff_by_variables(data, "n_bedrooms", 
+                             "n_host_identity_verified" ,
+                             "n_bedrooms" ,"n_host_identity_verified (1 Yes)")
+p6 <- price_diff_by_variables(data, "n_bedrooms", 
+                              "n_host_is_superhost" ,
+                              "n_bedrooms" ,"n_host_is_superhost (1 Yes)")
+
+g_interactions <- plot_grid(p1, p2, p3, p4, p5, p6, nrow=3, ncol=2)
+g_interactions
+
+```
+
+
+
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE, fig.width=8, fig.height = 3, fig.align="center"}
+# Models
+
+modellev1 <- " ~ n_accommodates"
+modellev2 <- paste0(" ~ ",paste(basic_lev,collapse = " + "))
+modellev3 <- paste0(" ~ ",paste(c(basic_lev, basic_add,host_lev),collapse = " + "))
+modellev4 <- paste0(" ~ ",paste(c(basic_lev,basic_add,host_lev,
+                                  reviews,poly_lev),collapse = " + "))
+modellev5 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1),collapse = " + "))
+modellev6 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1,X2),collapse = " + "))
+modellev7 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1,X2,amenities),collapse = " + "))
+modellev8 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1,X2,amenities,X3),collapse = " + "))
+
+
+# Holdout set
+
+smp_size <- floor(0.2 * nrow(data))
+set.seed(20220209)
+holdout_ids <- sample( seq_len( nrow( data ) ) , size = smp_size )
+data$holdout <- 0
+data$holdout[holdout_ids] <- 1
+data_holdout <- data %>% filter(holdout == 1)
+data_work <- data %>% filter(holdout == 0)
+
+## K = 5
+k_folds <- 5
+# Define seed value
+seed_val <- 20220210
+
+# Do the iteration
+for ( i in 1:8 ){
+  # Get the model name
+  model_name <-  paste0("modellev",i)
+  model_pretty_name <- paste0("M",i,"")
+  # Specify the formula
+  yvar <- "price"
+  xvars <- eval(parse(text = model_name))
+  formula <- formula(paste0(yvar,xvars))
+  
+  # Estimate model on the whole sample
+  model_work_data <- feols( formula , data = data_work , vcov='hetero' )
+  #  and get the summary statistics
+  fs  <- fitstat(model_work_data,c('rmse','r2','bic'))
+  BIC <- fs$bic
+  r2  <- fs$r2
+  rmse_train <- fs$rmse
+  ncoeff <- length( model_work_data$coefficients )
+  
+  # Do the k-fold estimation
+  set.seed(seed_val)
+  cv_i <- train( formula, data_work, method = "lm", 
+                 trControl = trainControl(method = "cv", number = k_folds))
+  rmse_test <- mean( cv_i$resample$RMSE )
+  
+  # Save the results
+  model_add <- tibble(Model=model_pretty_name, Coefficients=ncoeff,
+                      R_squared=r2, BIC = BIC, 
+                      Training_RMSE = rmse_train, Test_RMSE = rmse_test )
+  if ( i == 1 ){
+    model_results <- model_add
+  } else{
+    model_results <- rbind( model_results , model_add )
+  }
+}
+
+# END of OLS
+
+m3_rmse <-  model_results$Test_RMSE[3]
+
+```
+\newpage
+
+# Label Engineering/Model Decisions
+
+For label engineering, log transformation was considered, as per below histogram distribution of price is close to lognormal.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+ggplot(data=data, aes(x=price)) +
+  geom_histogram(aes(y = (..count..)/sum(..count..)), binwidth = 10, boundary=0,
+                 fill = 'navyblue', color = 'white', size = 0.25, alpha = 0.8,  show.legend=F,  na.rm=TRUE) +
+  coord_cartesian(xlim = c(0, 1100)) +
+  labs(x = "Price (US dollars)",y = "Percent")+
+  scale_y_continuous(expand = c(0.00,0.00),limits=c(0, 0.05), breaks = seq(0, 0.05, by = 0.01), labels = scales::percent_format(1)) +
+  scale_x_continuous(expand = c(0.00,0.00),limits=c(0,1100), breaks = seq(0,1100, 100)) +
+  theme_bw() 
+```
+
+I verified the outcome by comparing my preferred OLS model with level-log outcome after transforming back the log results. It turns out log model  performs somewhat worse.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Log OLS
+
+seed_val <- 20220210
+
+# Do the iteration
+for ( i in 1:8 ){
+  # Get the model name
+  model_name <-  paste0("modellev",i)
+  model_pretty_name <- paste0("M",i,"")
+  # Specify the formula
+  yvar <- "ln_price"
+  xvars <- eval(parse(text = model_name))
+  formula <- formula(paste0(yvar,xvars))
+  
+  # Estimate model on the whole sample
+  model_work_data <- feols( formula , data = data_work , vcov='hetero' )
+  #  and get the summary statistics
+  fs  <- fitstat(model_work_data,c('rmse','r2','bic'))
+  BIC <- fs$bic
+  r2  <- fs$r2
+  rmse_train <- fs$rmse
+  ncoeff <- length( model_work_data$coefficients )
+  
+  # Do the k-fold estimation
+  set.seed(seed_val)
+  cv_i <- train( formula, data_work, method = "lm", 
+                 trControl = trainControl(method = "cv", number = k_folds))
+  rmse_test <- mean( cv_i$resample$RMSE )
+  
+  # Save the results
+  model_add <- tibble(Model=model_pretty_name, Coefficients=ncoeff,
+                      R_squared=r2, BIC = BIC, 
+                      Training_RMSE = rmse_train, Test_RMSE = rmse_test )
+  if ( i == 1 ){
+    model_results_log <- model_add
+  } else{
+    model_results_log <- rbind( model_results , model_add )
+  }
+}
+
+# Log-Level Transformation
+
+m3_log <- feols( formula(paste0("ln_price",modellev3)) , 
+                 data = data_work, vcov = 'hetero' )
+
+data$lnp3 <- predict( m3_log , data )
+rmse3_log <- RMSE(data$lnp3,data$ln_price)
+
+
+data$lnplev <- exp(data$lnp3 )*exp((rmse3_log^2)/2)
+
+
+rmse3_log2lvl <- RMSE(data$lnplev,data$price)
+
+kbl(tibble( level = m3_rmse , log = rmse3_log2lvl ))
+```
+Below are the results in test sample for all Linear models created. As mentioned none outperforms Random Forest, but Model 7-8 comes close. I highlighted in the report model 3 as it likely less overfitted, easier to explain and the results are still close.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+
+model_results %>% 
+kable(booktabs = T , 
+        caption = "Cross-validated Test RMSE (Prediction error)") %>% 
+  kable_styling( full_width = T , latex_options = c("HOLD_position") ) 
+```
+
+
+## Tuning parameters
+
+For LASSO: default tuning to find optimal Lambda.
+For Random Forest: 5 random variables chosen for decorrelation, minimum 20 observations stopping rule, default 500 trees.
+
+## OLS coefficients
+
+For reference below are the coefficients of OLS model 3 referred in the working paper
+(Test RMSE, not holdout).
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+m3 <- feols( formula(paste0("price",modellev3)) , data = data_work, vcov = 'hetero' )
+
+
+kable( etable( m3,
+        se.below = T,
+        coefstat = 'se',
+        fitstat = c('rmse'),
+        se.row = F,
+        depvar = F,
+        digits = 3,
+        digits.stats = 4) , 
+        col.names = c('Model 3'),
+        "latex", booktabs = TRUE, 
+        caption = 
+         'Models 3 Airbnb') %>%
+        kable_styling(latex_options = "hold_position", font_size = 7 )
+```
+

@@ -1,0 +1,599 @@
+---
+title: Assignment 2 - Predicting Rio Airbnb Prices Summary
+author: "A. BOGNAR"
+output: 
+  pdf_document:
+    extra_dependencies: ["float"]
+urlcolor: red
+geometry: margin=0.5in
+
+---
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Loading packages
+
+
+library(tidyverse)
+library(modelsummary)
+library(kableExtra)
+library(ggpubr)
+library(fixest)
+library(xtable)
+library(caret)
+library(data.table)
+library(cowplot)
+library(knitr)
+
+```
+
+## Introduction
+
+For our expansion in the Brazilian rental market initial predictive models were built to assess their efficiency for pricing. In this paper I present the main findings. 
+
+## Data
+
+[Airbnb]("http://insideairbnb.com/get-the-data.html") data for rental units is publicly available for several cities. In this exercise we focused solely on apartments similar in size to our new acquisitions in Rio de Janeiro. 
+
+While the data is from the Airbnb database, the information of the units is always provided by the sellers. This leads to human error. Only some fields require minimal validation. Systematic errors were corrected but the data issues may still affect the results. Specifically, amenities and services provided with the property are entered in free-text fields, thus not all relevant predictors may be captured.
+
+The predictive variables used in the analysis can be grouped to four categories:
+
+* **General characteristics** of the apartment: number of accommodates, bedrooms, location etc.
+* Number of **reviews**.
+* Characteristics of the **host**. These may be instructive for our marketing strategies to understand important qualities for rentees.
+* **Amenities**.
+
+For full explanation on feature/label engineering see the technical report.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Get the data, filter apartments mid-sized, always rename columns with
+# f_ facotr n_ number d_ amenities flag_ for dummies
+
+data <- read_csv("https://raw.githubusercontent.com/BognarAndras/da3_prediction/main/assignment2/raw/listings.csv")
+
+
+data <- data %>%
+  filter(property_type %in% c("Entire rental unit" , "Entire serviced apartment" ,
+                             "Private room in rental unit" ,
+                             "Private room in serviced apartment"))
+
+data <- data %>%
+  mutate(f_property_type = factor(property_type))
+
+data$f_property_type <- factor(ifelse(data$f_property_type== "Entire rental unit", 
+                                     "Entire/Unit",
+              ifelse(data$f_property_type== "Entire serviced apartment",
+                                     "Entire/Apt",
+              ifelse(data$f_property_type== "Private room in serviced apartment",
+                                     "Room/Apt",
+              ifelse(data$f_property_type== "Private room in rental unit", 
+                                     "Room/Unit", ".")))))
+
+
+data <- data %>%
+  filter(accommodates > 1 & accommodates < 7)
+
+data <- data %>%
+  mutate(n_accommodates = accommodates)
+
+
+
+```
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# Data cleaning 
+
+# Room type factorized
+
+data <- data %>%
+  mutate(f_room_type = factor(room_type))
+
+data$f_room_type <- factor(ifelse(data$f_room_type== "Entire home/apt", "Entire/Apt",
+    ifelse(data$f_room_type== "Private room", "Private", ".")))
+
+# Dealing with amenities
+
+# First, get all unique amenities
+
+unique_amenities <-  unique(trimws(gsub("[[]" , "" ,gsub("[]]" , "" ,gsub("\"" , "" ,unlist(strsplit(as.character(data$amenities), ",")))))))
+
+# Use this list to find those relevant for prediction
+
+key_words <- c("hdtv", "oven" , "wifi" ,  "refrigerator" , 
+               "garage" ,  "pool" ,  "gym" , 
+              "grill" , "coffee"  , "dryer" ,
+              "washer" ,  "parking" , "sound system" , "air conditioning" ,
+              "elevator")
+
+# Double loop to select the list items from all unique possibilities
+# This prevents observations not being selected for the item
+# if word is part of string eg. "Sony sound system" instead of "sound system".
+# Also minding capitalization
+
+for (x in key_words) {
+  
+  unique_amenities_mod <- c()
+  
+  for (i in seq_along(unique_amenities)) {
+    new_item <- ifelse(grepl( x , tolower(unique_amenities[i]), fixed = TRUE) , 
+                       tolower( x ) , unique_amenities[i] )
+    unique_amenities_mod <- c(unique_amenities_mod , new_item)
+  }
+  
+  unique_amenities <-  unique(unique_amenities_mod)
+  
+}
+
+# Add binary columns for amenities
+
+for(p in key_words) data <- data %>% 
+      mutate(!! p := +(ifelse((grepl( p, tolower(data$amenities), fixed = TRUE)),1,0)))
+
+# Correct column names
+
+data <- rename(data, c(air_conditioning = `air conditioning`, 
+                       sound_system = `sound system` ))
+
+# Some key words have synonyms
+
+data <- data %>% 
+  mutate(  oven = ifelse(data$oven == 1 , 1 , 
+                          ifelse((grepl( "stove", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+data <- data %>% 
+  mutate(  air_conditioning = ifelse(data$air_conditioning == 1 , 1 , 
+                          ifelse((grepl( "AC unit", tolower(data$amenities), fixed = TRUE)),1,0)) )
+
+# Separate television from hdtv
+
+data <- data %>% 
+  mutate(  television = 
+             ifelse((grepl( "tv", gsub("hdtv" , "television" , 
+                                       tolower(data$amenities)), fixed = TRUE)),1,0) )
+ 
+# add dummy d_ to column names
+
+dummies <- names(data)[seq(78,93)]
+
+data <- data %>%
+  mutate_at(vars(dummies), funs("d"= (.)))
+
+dnames <- data %>%
+  select(ends_with("_d")) %>%
+  names()
+dnames_i <- match(dnames, colnames(data))
+colnames(data)[dnames_i] <- paste0("d_", tolower(gsub("[^[:alnum:]_]", "",dummies)))
+
+# Correct price formatting
+
+data$price <- as.integer(gsub("[$]" , "" , gsub("," , "", data$price)))
+
+# For host verification, government verification seems unique predictor
+
+data <- data %>% 
+  mutate(  n_host_governmentid =  ifelse((grepl( "government", tolower(data$host_verifications), fixed = TRUE)),1,0) )
+
+# Cant meaningfully predict districts with few observations, group them
+# Maybe being in small district is meaningful predictor
+
+large_neighboorhoods <- data.table(data)[, .(.N ) , 
+                                         by = neighbourhood_cleansed ][ N >= 100 , neighbourhood_cleansed ]
+
+data <- data %>% 
+  mutate(  f_neighbourhood_cleansed =  
+             factor(ifelse(neighbourhood_cleansed %in% large_neighboorhoods,
+                    neighbourhood_cleansed,"small neighboorhoods")))
+
+# Bathroom numbers is in text format, extract numbers
+
+bath_missing <-  c("Private half-bath" , "Half-bath" , "Shared half-bath" )
+
+# 0 bathrooms are mistakes from users, they actually have 1 bathroom based on
+# links
+
+data <- data %>% 
+  mutate(  n_bathrooms_text =  
+             ifelse(ifelse(is.na(bathrooms_text) ,"1 bath" , bathrooms_text) %in% 
+                    bath_missing ,
+              "1 bath" , ifelse(is.na(bathrooms_text) ,"1 bath" , bathrooms_text) ))
+
+
+data <- data %>% 
+  mutate(  n_bathrooms_text =  
+             as.numeric(unlist(regmatches(n_bathrooms_text,
+                                          gregexpr("[[:digit:]]+\\.*[[:digit:]]*",
+                                                   n_bathrooms_text)))))
+
+data <- data %>% 
+  mutate(  n_bathrooms_text = 
+             ifelse(n_bathrooms_text == 0 , 1 , n_bathrooms_text))
+
+# More than a week required rent seems to be an error, group these
+
+
+data <- data %>% 
+  mutate(   flag_minimum_nights =
+              ifelse(minimum_nights > 7 , 1,0) ,
+              n_minimum_nights =  
+              ifelse(minimum_nights > 7 , 7,minimum_nights) )
+
+# Binary variables
+
+data <- data %>% 
+  mutate(  n_host_is_superhost =  
+             ifelse(host_is_superhost , 1,0) )
+
+
+data <- data %>% 
+  mutate(  n_host_identity_verified =  
+             ifelse(host_identity_verified , 1,0) )
+
+
+data <- data %>% 
+  mutate(  n_instant_bookable =  
+             ifelse(instant_bookable , 1,0) )
+# Numerics
+
+data <- data %>% 
+  mutate(  n_bedrooms  =  bedrooms )
+
+data <- data %>% 
+  mutate(  n_number_of_reviews  =  number_of_reviews )
+
+# For how long host has been posting
+
+data <- data %>%
+  mutate(
+    n_host_since = as.numeric(as.Date(calendar_last_scraped,format="%Y-%m-%d") -
+                                as.Date(host_since ,format="%Y-%m-%d")))
+# Keep relevant variables
+
+data <- data %>%
+  select(matches("^d_.*|^n_.*|^f_.*|^flag_.*"), price)
+
+# Deal with missing values, IMPUTE IF FEW, leave flag if considerable amount
+
+
+
+data <- data %>%
+  mutate(
+    n_host_is_superhost =  ifelse(is.na(n_host_is_superhost), 0, n_host_is_superhost), 
+    n_host_identity_verified =  ifelse(is.na(n_host_identity_verified), 
+                                       0, n_host_identity_verified), 
+    flag_n_bedrooms = ifelse(is.na(n_bedrooms), 1 , 0 ),
+    n_bedrooms =  ifelse(is.na(n_bedrooms), 
+                         median(n_bedrooms , na.rm = T), n_bedrooms),
+    n_host_since = ifelse(is.na(n_host_since), median(n_host_since , na.rm = T), 
+                          n_host_since))
+
+
+# Drop with extreme price
+
+data <-  data %>% filter(price <= 1100 & price > 50 )
+
+# Functional forms
+
+data <- data %>%
+  mutate(
+    n_number_of_reviews2=n_number_of_reviews^2,
+    n_number_of_reviews3=n_number_of_reviews^3,
+    ln_price = log(price)
+  )
+
+data <- data %>%
+  mutate(f_property_type = factor(ifelse(as.character(f_property_type) %in% 
+                                           c("Room/Apt" , "Room/Unit" ) ,
+                                         "Room", 
+                                         as.character(f_property_type)))
+  )
+
+# Group variables
+
+
+
+basic_lev  <- c("n_accommodates", "n_bedrooms", "f_property_type", "f_room_type", "n_number_of_reviews", "n_minimum_nights" , "n_host_is_superhost")
+
+basic_add <- c("f_neighbourhood_cleansed","n_instant_bookable" , "n_bathrooms_text")
+
+reviews <- c("n_number_of_reviews" )
+
+host_lev <- c("n_host_governmentid", "n_host_since","n_host_identity_verified")
+
+poly_lev <- c("n_number_of_reviews3" , "n_number_of_reviews2" )
+
+amenities <-  grep("^d_.*", names(data), value = TRUE)
+
+
+# Interaction dummies 
+
+X1  <- c("f_room_type*f_property_type",  "n_instant_bookable*n_minimum_nights" , "n_host_is_superhost*n_number_of_reviews")
+X2  <- c("n_instant_bookable*f_neighbourhood_cleansed", "n_instant_bookable*n_bedrooms", "n_host_identity_verified*n_bedrooms", "n_host_identity_verified*f_neighbourhood_cleansed" )
+X3  <- c(paste0("(f_property_type + f_room_type + n_bedrooms) * (",
+                paste(amenities, collapse=" + "),")"))
+
+
+```
+
+## Models
+
+Several models were built with three different methods: linear regressions, LASSO and Random Forest. Below I present the results of one selected model from each type. The OLS model is not the best performing one of its type. However, it is instructive to understand underlying patterns. The main lessons:
+
+* Proxies used for the size of the apartment (accommodates, bedrooms) have the strongest association with the price.
+* Santa Teresa is the cheapest district, Leblon is the most expensive.
+* The central district also offers very cheap accommodations, even cheaper than the aggregate of districts that have less than 100 units in the dataset.
+* [*Superhosts*]("https://www.airbnb.com/help/article/828/about-superhosts"), who are in Airbnb partnerships tend to offer cheaper accommodations.
+
+Even the best performing theory based models are outperformed by the data-driven alternatives. However, even these models produce really high prediction errors. Below you can see the expected average errors which are really high considering the avg. apartment price in the dataset is `r round(mean(data$price),0)`.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE, fig.width=8, fig.height = 3, fig.align="center"}
+# Models
+
+modellev1 <- " ~ n_accommodates"
+modellev2 <- paste0(" ~ ",paste(basic_lev,collapse = " + "))
+modellev3 <- paste0(" ~ ",paste(c(basic_lev, basic_add,host_lev),collapse = " + "))
+modellev4 <- paste0(" ~ ",paste(c(basic_lev,basic_add,host_lev,
+                                  reviews,poly_lev),collapse = " + "))
+modellev5 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1),collapse = " + "))
+modellev6 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1,X2),collapse = " + "))
+modellev7 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1,X2,amenities),collapse = " + "))
+modellev8 <- paste0(" ~ ",paste(c(basic_lev,basic_add,reviews,
+                                  host_lev,poly_lev,X1,X2,amenities,X3),collapse = " + "))
+
+
+# Holdout set
+
+smp_size <- floor(0.2 * nrow(data))
+set.seed(20220209)
+holdout_ids <- sample( seq_len( nrow( data ) ) , size = smp_size )
+data$holdout <- 0
+data$holdout[holdout_ids] <- 1
+data_holdout <- data %>% filter(holdout == 1)
+data_work <- data %>% filter(holdout == 0)
+
+## K = 5
+k_folds <- 5
+# Define seed value
+seed_val <- 20220210
+
+# Do the iteration
+for ( i in 1:8 ){
+  # Get the model name
+  model_name <-  paste0("modellev",i)
+  model_pretty_name <- paste0("M",i,"")
+  # Specify the formula
+  yvar <- "price"
+  xvars <- eval(parse(text = model_name))
+  formula <- formula(paste0(yvar,xvars))
+  
+  # Estimate model on the whole sample
+  model_work_data <- feols( formula , data = data_work , vcov='hetero' )
+  #  and get the summary statistics
+  fs  <- fitstat(model_work_data,c('rmse','r2','bic'))
+  BIC <- fs$bic
+  r2  <- fs$r2
+  rmse_train <- fs$rmse
+  ncoeff <- length( model_work_data$coefficients )
+  
+  # Do the k-fold estimation
+  set.seed(seed_val)
+  cv_i <- train( formula, data_work, method = "lm", 
+                 trControl = trainControl(method = "cv", number = k_folds))
+  rmse_test <- mean( cv_i$resample$RMSE )
+  
+  # Save the results
+  model_add <- tibble(Model=model_pretty_name, Coefficients=ncoeff,
+                      R_squared=r2, BIC = BIC, 
+                      Training_RMSE = rmse_train, Test_RMSE = rmse_test )
+  if ( i == 1 ){
+    model_results <- model_add
+  } else{
+    model_results <- rbind( model_results , model_add )
+  }
+}
+
+# END of OLS
+
+# LASSO
+# Most complex model
+vars_model_8 <- c("price", basic_lev,basic_add,reviews,poly_lev,host_lev,X1,X2,amenities,X3)
+
+# Tuning params
+train_control <- trainControl( method = "cv", number = k_folds)
+tune_grid     <- expand.grid("alpha" = c(1), "lambda" = seq(0.05, 1, by = 0.05))
+formula <- formula(paste0("price ~ ", paste(setdiff(vars_model_8, "price"), collapse = " + ")))
+
+# Run LASSO
+set.seed(seed_val)
+lasso_model <- caret::train(formula,
+                            data = data_work,
+                            method = "glmnet",
+                            preProcess = c("center", "scale"),
+                            trControl = train_control,
+                            tuneGrid = tune_grid,
+                            na.action=na.exclude)
+
+
+# Random Forest
+
+# set tuning
+tune_grid <- expand.grid(
+  .mtry = c(3),
+  .splitrule = "variance",
+  .min.node.size = c(20)
+)
+
+predictors_1 <- c(basic_lev)
+predictors_2 <- c(basic_lev,basic_add,reviews,host_lev,poly_lev,amenities)
+
+
+set.seed(seed_val)
+({
+  capture.output(rf_model_1 <- train(
+    formula(paste0("price ~", paste0(predictors_1, collapse = " + "))),
+    data = data_work,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    importance = "impurity",
+    trace = FALSE ,
+    verbose = F
+  ))
+})
+
+tune_grid <- expand.grid(
+  .mtry = c(5),
+  .splitrule = "variance",
+  .min.node.size = c(20)
+)
+
+
+set.seed(seed_val)
+({
+  capture.output( rf_model_2 <- train(
+    formula(paste0("price ~", paste0(predictors_2, collapse = " + "))),
+    data = data_work,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    importance = "impurity",
+    trace = FALSE ,
+    verbose = F
+  ))
+})
+
+
+results <- resamples(
+  list(
+    model_1  = rf_model_1,
+    model_2  = rf_model_2
+  )
+)
+
+
+
+# Rerun 3 models on Holdout set to see expected errors
+m3 <- feols( formula(paste0("price",modellev3)) , data = data_work, vcov = 'hetero' )
+
+# Make prediction for the hold-out sample with each models
+
+m3_p <- predict( m3 , newdata = data_holdout )
+mL_p <- predict( lasso_model , newdata = data_holdout )
+mL_p_rf <- predict( rf_model_2 , newdata = data_holdout )
+
+# Calculate the RMSE on hold-out sample
+m3_rmse <- RMSE(m3_p,data_holdout$price)
+mL_rmse <- RMSE(mL_p,data_holdout$price)
+mL_rmse_rf <- RMSE(mL_p_rf,data_holdout$price)
+
+# Create a table
+sum <- rbind(format(m3_rmse, digits=4),format(mL_rmse, digits=4),
+             format(mL_rmse_rf, digits=4))
+rownames(sum) <- c('OLS','LASSO','Random Forest')
+colnames(sum) <- c('RMSE on hold-out sample')
+kable(sum , align=rep('c', 3) ) %>% kable_styling(latex_options = "hold_position", font_size = 15 )
+
+```
+To illustrate, see the predictions of the LASSO model compared to actual prices. Especially above 500$ the model is heavily under-predicting in most cases but also overestimates often.
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+# LASSOS Y-YHAT
+
+data_holdout$predLp <- mL_p
+
+ggplot( data_holdout , aes( y = price , x = predLp ) ) +
+  geom_point( size = 1 , color = 'blue' ) +
+  geom_abline( intercept = 0, slope = 1, size = 1, color = 'green' , linetype = 'dashed') +
+  xlim(-1,max(data_holdout$price))+
+  ylim(-1,max(data_holdout$price))+
+  labs(x='Predicted price (US$)',y='Price (US$)')+
+  theme_bw()
+```
+
+These data-driven models also offer less insight into the driving factors of their outcome than the OLS models. Below are two graphs trying to give some idea about the variables considered to be important by the Random Forest model. First, you can see the 10 most important variables in generating the overall predictions. The main predictors are similar to OLS, but reviews and certain items seem to be more important than the location. 
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+
+# Random forest variable importance plots top 10
+
+rf_model_2_var_imp <- ranger::importance(rf_model_2$finalModel)/1000
+
+rf_model_2_var_imp_df <-
+  data.frame(varname = names(rf_model_2_var_imp),imp = rf_model_2_var_imp) %>%
+  mutate(varname = gsub("f_neighbourhood_cleansed", "District: ", varname) ) %>%
+  mutate(varname = gsub("f_room_type", "Room type: ", varname) ) %>%
+  mutate(varname = gsub("f_property_type", "Property type: ", varname) ) %>%
+  arrange(desc(imp)) %>%
+  mutate(imp_percentage = imp/sum(imp))
+
+ggplot(rf_model_2_var_imp_df[1:10,], aes(x=reorder(varname, imp), y=imp_percentage)) +
+  geom_point(color='red', size=1) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), 
+               color='red', size=0.75) +
+  ylab("Importance (Percent)") +
+  xlab("Variable Name") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw()
+
+# Creating groups
+
+varnames <- rf_model_2$finalModel$xNames
+f_neighbourhood_cleansed_varnames <- grep("f_neighbourhood_cleansed",varnames, 
+                                          value = TRUE)
+f_property_type_varnames <- grep("f_property_type",varnames, value = TRUE)
+f_room_type_varnames <- grep("f_room_type",varnames, value = TRUE)
+
+
+groups <- list(f_neighbourhood_cleansed=f_neighbourhood_cleansed_varnames,
+               f_property_type = f_property_type_varnames,
+               f_room_type = f_room_type_varnames,
+               n_host_since = "n_host_since",
+               n_accommodates = "n_accommodates",
+               n_bedrooms = "n_bedrooms")
+
+group.importance <- function(rf.obj, groups) {
+  var.imp <- as.matrix(sapply(groups, function(g) {
+    sum(ranger::importance(rf.obj)[g], na.rm = TRUE)
+  }))
+  colnames(var.imp) <- "MeanDecreaseGini"
+  return(var.imp)
+}
+
+rf_model_2_var_imp_grouped <- group.importance(rf_model_2$finalModel, groups)
+rf_model_2_var_imp_grouped_df <- data.frame(varname = rownames(rf_model_2_var_imp_grouped),
+                                            imp = rf_model_2_var_imp_grouped[,1])  %>%
+  mutate(imp_percentage = imp/sum(imp))
+
+
+```
+
+If we group together categories and numeric values with ranges, we see that while individual districts may not be as important as a whole they are significant. 
+
+```{r, echo=FALSE , warning=FALSE , message=FALSE}
+
+# Grouped variable importance 
+
+ggplot(rf_model_2_var_imp_grouped_df, aes(x=reorder(varname, imp), 
+                                          y=imp_percentage)) +
+  geom_point(color='red', size=1) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), 
+               color='red', size=0.7) +
+  ylab("Importance (Percent)") +   xlab("Variable Name") +
+  coord_flip() +
+
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw()
+```
+\newpage
+
+## Conclusion, Further Analysis
+
+In conclusion, model errors are too significant at this stage to provide a reliable solution. The main sources of the errors are:
+
+* Limited data: consider adding similar units to our models, for example lofts or other units that are similar to apartments.
+* Limited variables: The Rio dataset didn't include all relevant information such as cancellation policy of the host. Some potentially relevant features had no values or many missing observations. Nevertheless feature choices have to be further investigated. 
+
+Additional techniques may be explored. However, it is also worth noting that at the time of the recording of the data (2021/Nov), Brazil was between two major waves of the COVID pandemic. Especially since 2022 January the Omicron variant caused a major upswing in case numbers, thus any findings from this period has to be cautiously applied for predicting lockdown periods.
