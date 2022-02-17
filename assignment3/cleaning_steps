@@ -1,0 +1,28 @@
+Data
+
+1 Dropped:  COGS, finished_prod, net_dom_sales, net_exp_sales, wages
+2 Filter out 2016
+
+label engineering
+
+3 ADD status_alive where there is any sales
+4 ADD default 1 where this year status_alive but 2 years later no
+5 ADD ln_sales , sales_mil ,  sales_mil_log ,  age ,  new : if age is less than a year
+6 Filter 2012 alive firms between 10 mill and 1000 USD sales
+7 Create age2 foreign_management gender_m m_region_loc
+8 Correct assest variables. cant be negative
+9 Add total assets
+10 divide profit loss measures by total assets and balance sheet by bs total assets
+11 Make sure ratios are between 0 and 1 and some between -1 and 1
+12 drop unnecessary flags where there weere no errors
+
+Additional
+
+13 ceo_age + ceo young max-min 25-75 (+flags)
+14 Factors , labor_avg_mod impute mean
+
+DROP
+
+15 If missing: liq_assets_bs foreign ind age material_exp_pl m_region_loc
+16 factors drop if missing
+"urban_m"      "ind2_cat"     "gender_m"     "m_region_loc" "default_f"  
